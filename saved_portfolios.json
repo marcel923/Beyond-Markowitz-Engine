@@ -1,0 +1,344 @@
+[
+  {
+    "snapshot_id": "2026-08-02_16-53",
+    "snapshot_name": "Test 123",
+    "created_at": "2026-08-02T16:53:54",
+    "parameters": {
+      "lambda": 0.6,
+      "gamma": 1.5,
+      "kappa": 1,
+      "nref": 8,
+      "gamma_intra": 1,
+      "eta_inter": 1,
+      "wmax": 0.35,
+      "rf": 0.045
+    },
+    "fundamental_inputs": [
+      {
+        "Ticker": "AVGO",
+        "Assigned Cluster": 1,
+        "Current Price (P0)": 388.68,
+        "Target Consensus (Ti)": 525,
+        "Target High (T_high)": 671,
+        "Target Low (T_low)": 215,
+        "Analyst Coverage (Ni)": 23,
+        "EPS 2Y CAGR (Gi,2Y)": 55,
+        "90d EPS Revision (ΔEPS90d)": 1
+      },
+      {
+        "Ticker": "NVDA",
+        "Assigned Cluster": 1,
+        "Current Price (P0)": 201.82,
+        "Target Consensus (Ti)": 313,
+        "Target High (T_high)": 743,
+        "Target Low (T_low)": 180,
+        "Analyst Coverage (Ni)": 16,
+        "EPS 2Y CAGR (Gi,2Y)": 49,
+        "90d EPS Revision (ΔEPS90d)": -0.16
+      },
+      {
+        "Ticker": "005930.KS",
+        "Assigned Cluster": 2,
+        "Current Price (P0)": 207000,
+        "Target Consensus (Ti)": 487000,
+        "Target High (T_high)": 725000,
+        "Target Low (T_low)": 301000,
+        "Analyst Coverage (Ni)": 32,
+        "EPS 2Y CAGR (Gi,2Y)": 52,
+        "90d EPS Revision (ΔEPS90d)": 7
+      },
+      {
+        "Ticker": "HPE",
+        "Assigned Cluster": 1,
+        "Current Price (P0)": 47.83,
+        "Target Consensus (Ti)": 68,
+        "Target High (T_high)": 80,
+        "Target Low (T_low)": 52,
+        "Analyst Coverage (Ni)": 11,
+        "EPS 2Y CAGR (Gi,2Y)": 16,
+        "90d EPS Revision (ΔEPS90d)": 1
+      },
+      {
+        "Ticker": "LYC.AX",
+        "Assigned Cluster": 2,
+        "Current Price (P0)": 14.09,
+        "Target Consensus (Ti)": 0,
+        "Target High (T_high)": 0,
+        "Target Low (T_low)": 0,
+        "Analyst Coverage (Ni)": 0,
+        "EPS 2Y CAGR (Gi,2Y)": 0,
+        "90d EPS Revision (ΔEPS90d)": 0
+      },
+      {
+        "Ticker": "FIVE",
+        "Assigned Cluster": 1,
+        "Current Price (P0)": 216.23,
+        "Target Consensus (Ti)": 0,
+        "Target High (T_high)": 0,
+        "Target Low (T_low)": 0,
+        "Analyst Coverage (Ni)": 0,
+        "EPS 2Y CAGR (Gi,2Y)": 0,
+        "90d EPS Revision (ΔEPS90d)": 0
+      },
+      {
+        "Ticker": "SIG.AX",
+        "Assigned Cluster": 2,
+        "Current Price (P0)": 2.94,
+        "Target Consensus (Ti)": 0,
+        "Target High (T_high)": 0,
+        "Target Low (T_low)": 0,
+        "Analyst Coverage (Ni)": 0,
+        "EPS 2Y CAGR (Gi,2Y)": 0,
+        "90d EPS Revision (ΔEPS90d)": 0
+      },
+      {
+        "Ticker": "ANTO.L",
+        "Assigned Cluster": 2,
+        "Current Price (P0)": 3655,
+        "Target Consensus (Ti)": 0,
+        "Target High (T_high)": 0,
+        "Target Low (T_low)": 0,
+        "Analyst Coverage (Ni)": 0,
+        "EPS 2Y CAGR (Gi,2Y)": 0,
+        "90d EPS Revision (ΔEPS90d)": 0
+      },
+      {
+        "Ticker": "MU",
+        "Assigned Cluster": 1,
+        "Current Price (P0)": 834.04,
+        "Target Consensus (Ti)": 0,
+        "Target High (T_high)": 0,
+        "Target Low (T_low)": 0,
+        "Analyst Coverage (Ni)": 0,
+        "EPS 2Y CAGR (Gi,2Y)": 0,
+        "90d EPS Revision (ΔEPS90d)": 0
+      },
+      {
+        "Ticker": "CIEN",
+        "Assigned Cluster": 1,
+        "Current Price (P0)": 378.25,
+        "Target Consensus (Ti)": 0,
+        "Target High (T_high)": 0,
+        "Target Low (T_low)": 0,
+        "Analyst Coverage (Ni)": 0,
+        "EPS 2Y CAGR (Gi,2Y)": 0,
+        "90d EPS Revision (ΔEPS90d)": 0
+      },
+      {
+        "Ticker": "SQM",
+        "Assigned Cluster": 2,
+        "Current Price (P0)": 67.1,
+        "Target Consensus (Ti)": 0,
+        "Target High (T_high)": 0,
+        "Target Low (T_low)": 0,
+        "Analyst Coverage (Ni)": 0,
+        "EPS 2Y CAGR (Gi,2Y)": 0,
+        "90d EPS Revision (ΔEPS90d)": 0
+      },
+      {
+        "Ticker": "000660.KS",
+        "Assigned Cluster": 2,
+        "Current Price (P0)": 1322000,
+        "Target Consensus (Ti)": 0,
+        "Target High (T_high)": 0,
+        "Target Low (T_low)": 0,
+        "Analyst Coverage (Ni)": 0,
+        "EPS 2Y CAGR (Gi,2Y)": 0,
+        "90d EPS Revision (ΔEPS90d)": 0
+      },
+      {
+        "Ticker": "SNDK",
+        "Assigned Cluster": 1,
+        "Current Price (P0)": 1228.15,
+        "Target Consensus (Ti)": 0,
+        "Target High (T_high)": 0,
+        "Target Low (T_low)": 0,
+        "Analyst Coverage (Ni)": 0,
+        "EPS 2Y CAGR (Gi,2Y)": 0,
+        "90d EPS Revision (ΔEPS90d)": 0
+      }
+    ],
+    "final_weights": {
+      "AVGO": 0.34999999999999837,
+      "NVDA": 1.0174283655902604e-16,
+      "HPE": 0.2270426606973377,
+      "FIVE": 0,
+      "MU": 8.827503396573686e-17,
+      "CIEN": 0,
+      "SNDK": 1.3726632697631876e-16,
+      "005930.KS": 0.349999999999999,
+      "LYC.AX": 0,
+      "SIG.AX": 0.0729573393026647,
+      "ANTO.L": 0,
+      "SQM": 0,
+      "000660.KS": 0
+    },
+    "cluster_of": {
+      "AVGO": 1,
+      "NVDA": 1,
+      "HPE": 1,
+      "FIVE": 1,
+      "MU": 1,
+      "CIEN": 1,
+      "SNDK": 1,
+      "005930.KS": 2,
+      "LYC.AX": 2,
+      "SIG.AX": 2,
+      "ANTO.L": 2,
+      "SQM": 2,
+      "000660.KS": 2
+    },
+    "entry_prices": {
+      "AVGO": 388.68,
+      "NVDA": 201.82,
+      "HPE": 47.83,
+      "FIVE": 216.23,
+      "MU": 834.04,
+      "CIEN": 378.25,
+      "SNDK": 1228.15,
+      "005930.KS": 207000,
+      "LYC.AX": 14.09,
+      "SIG.AX": 2.94,
+      "ANTO.L": 3655,
+      "SQM": 67.1,
+      "000660.KS": 1322000,
+      "SPY": 747.030029296875
+    }
+  },
+  {
+    "snapshot_id": "2026-08-02_23-10",
+    "snapshot_name": "Test (random inputs)",
+    "created_at": "2026-08-02T23:10:29",
+    "parameters": {
+      "lambda": 0.89,
+      "gamma": 1.44,
+      "kappa": 1.24,
+      "nref": 8.05,
+      "gamma_intra": 1.74,
+      "eta_inter": 0.99,
+      "wmax": 0.22,
+      "rf": 0.045
+    },
+    "fundamental_inputs": [
+      {
+        "Ticker": "NVDA",
+        "Assigned Cluster": 1,
+        "Current Price (P0)": 200.75,
+        "Target Consensus (Ti)": 300,
+        "Target High (T_high)": 500,
+        "Target Low (T_low)": 150,
+        "Analyst Coverage (Ni)": 23,
+        "EPS 2Y CAGR (Gi,2Y)": 50,
+        "90d EPS Revision (ΔEPS90d)": 1
+      },
+      {
+        "Ticker": "MU",
+        "Assigned Cluster": 1,
+        "Current Price (P0)": 823.03,
+        "Target Consensus (Ti)": 1560,
+        "Target High (T_high)": 2500,
+        "Target Low (T_low)": 750,
+        "Analyst Coverage (Ni)": 30,
+        "EPS 2Y CAGR (Gi,2Y)": 100,
+        "90d EPS Revision (ΔEPS90d)": 3
+      },
+      {
+        "Ticker": "AVGO",
+        "Assigned Cluster": 1,
+        "Current Price (P0)": 389.28,
+        "Target Consensus (Ti)": 650,
+        "Target High (T_high)": 800,
+        "Target Low (T_low)": 250,
+        "Analyst Coverage (Ni)": 28,
+        "EPS 2Y CAGR (Gi,2Y)": 50,
+        "90d EPS Revision (ΔEPS90d)": 2
+      },
+      {
+        "Ticker": "PODD",
+        "Assigned Cluster": 2,
+        "Current Price (P0)": 165.35,
+        "Target Consensus (Ti)": 200,
+        "Target High (T_high)": 250,
+        "Target Low (T_low)": 140,
+        "Analyst Coverage (Ni)": 10,
+        "EPS 2Y CAGR (Gi,2Y)": 30,
+        "90d EPS Revision (ΔEPS90d)": 0
+      },
+      {
+        "Ticker": "AVAV",
+        "Assigned Cluster": 3,
+        "Current Price (P0)": 149.37,
+        "Target Consensus (Ti)": 170,
+        "Target High (T_high)": 250,
+        "Target Low (T_low)": 100,
+        "Analyst Coverage (Ni)": 8,
+        "EPS 2Y CAGR (Gi,2Y)": 40,
+        "90d EPS Revision (ΔEPS90d)": 0
+      },
+      {
+        "Ticker": "LLY",
+        "Assigned Cluster": 2,
+        "Current Price (P0)": 1148.84,
+        "Target Consensus (Ti)": 1400,
+        "Target High (T_high)": 1700,
+        "Target Low (T_low)": 950,
+        "Analyst Coverage (Ni)": 32,
+        "EPS 2Y CAGR (Gi,2Y)": 23,
+        "90d EPS Revision (ΔEPS90d)": 1
+      },
+      {
+        "Ticker": "ARGX",
+        "Assigned Cluster": 2,
+        "Current Price (P0)": 853.82,
+        "Target Consensus (Ti)": 1100,
+        "Target High (T_high)": 1500,
+        "Target Low (T_low)": 900,
+        "Analyst Coverage (Ni)": 17,
+        "EPS 2Y CAGR (Gi,2Y)": 30,
+        "90d EPS Revision (ΔEPS90d)": 2
+      },
+      {
+        "Ticker": "KKR",
+        "Assigned Cluster": 1,
+        "Current Price (P0)": 101.43,
+        "Target Consensus (Ti)": 119,
+        "Target High (T_high)": 130,
+        "Target Low (T_low)": 100,
+        "Analyst Coverage (Ni)": 9,
+        "EPS 2Y CAGR (Gi,2Y)": 10,
+        "90d EPS Revision (ΔEPS90d)": 0
+      }
+    ],
+    "final_weights": {
+      "NVDA": 9.340401715962623e-16,
+      "MU": 0.22,
+      "AVGO": 0.2199999999999999,
+      "KKR": 0.10191618373449562,
+      "PODD": 1.813002872830261e-15,
+      "LLY": 0.21999999999999745,
+      "ARGX": 0.21999999999999878,
+      "AVAV": 0.018083816265505596
+    },
+    "cluster_of": {
+      "NVDA": 1,
+      "MU": 1,
+      "AVGO": 1,
+      "KKR": 1,
+      "PODD": 2,
+      "LLY": 2,
+      "ARGX": 2,
+      "AVAV": 3
+    },
+    "entry_prices": {
+      "NVDA": 200.75,
+      "MU": 823.03,
+      "AVGO": 389.28,
+      "KKR": 101.43,
+      "PODD": 165.35,
+      "LLY": 1148.84,
+      "ARGX": 853.82,
+      "AVAV": 149.37,
+      "SPY": 747.030029296875
+    }
+  }
+]

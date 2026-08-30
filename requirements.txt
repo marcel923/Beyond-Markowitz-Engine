@@ -1,0 +1,9 @@
+dash>=3.3,<4.0  # UWAGA: Dash 4.x przepisał dcc.Slider/dcc.Dropdown od zera (nie używają już rc-slider/react-select),
+                # przez co cały custom dark-theme CSS w app.index_string przestaje trafiać w jakiekolwiek elementy.
+                # Zostajemy na gałęzi 3.x do czasu migracji stylowania na nowe API Dash 4.
+yfinance>=0.2.60
+plotly==5.24.1
+pandas>=2.2.3
+numpy>=1.26
+scipy>=1.13
+scikit-learn>=1.9
