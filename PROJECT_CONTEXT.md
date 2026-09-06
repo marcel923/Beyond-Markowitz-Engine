@@ -128,13 +128,223 @@ $$\text{and global box constraints:} \quad w_{\text{final}, i} = W_{C_k} \cdot g
 
 ## 5. System Architecture & Module Specifications
 
+**Etap 0 (architecture split) complete.** The old monolithic `quant_terminal.py`
+(2711 lines: UI layout, callbacks, and math all in one file) has been split
+into a layered structure with a strict one-directional dependency rule:
+`ui/` may import `engine/` and `data/`; `engine/` and `data/` NEVER import
+from `ui/` or from each other. `engine/` has zero Dash imports and zero
+disk/network I/O -- pure functions on DataFrames/Series/arrays in, same out.
+This is what makes a future ML-based `mu_i` estimator (see Section 6 roadmap)
+a change confined to `engine/returns.py`, touching nothing else.
+
+Verified behavior-preserving: callback_map keys (34/34), full layout
+component-id sets (104/104), and numeric solver outputs are identical
+between the old monolith and the new structure (regression-tested on the
+same 6/31-ticker scenarios used throughout this project's history).
+
+**Post-delivery bugfix pass (same day):** the numeric regression tests above
+call business-logic functions directly in Python and never actually exercise
+a live Dash request/callback cycle, so they could not catch missing
+module-level imports in code paths only reached that way. Real-world testing
+surfaced 4 such gaps, all introduced by the mechanical file-splitting itself
+(a name that was "free" via shared scope in the monolith needs an explicit
+import once split across files) -- not a logic change:
+- `ui/components.py` was missing `import pandas as pd` (`generate_tws_matrix_styles`
+  uses `pd.isna`) -- surfaced as `NameError: name 'pd' is not defined` from
+  Stage 1, since that function is called from `ui/tab1_market_data.py`.
+- `ui/tab1_market_data.py`, `tab2_fundamentals.py`, `tab4_rebalance.py`,
+  `tab5_sandbox.py`, and `layout.py` were all missing `import dash` itself
+  (they imported `dcc`/`html`/`dash_table` from it, but not the `dash` module
+  used bare for `dash.no_update` / `dash.callback_context`).
+- `ui/tab2_fundamentals.py` was missing the `engine.clustering` import for
+  `compute_semicovariance_matrix`/`semicov_to_semicorr`, needed by
+  `compute_stage3_baseline_clusters` after its move from tab1 to tab2.
+
+Fixed and reverified via a full static AST scan across every `.py` file
+(every `Name` node in `Load` context checked against imports + local
+defs/params, not just the specific reported error) plus another live-app
+`callback_map` check (still 34/34) -- not just a patch for the one reported
+symptom. Lesson for future splits: run the AST-undefined-name scan as a
+matter of course after any file-splitting refactor, before declaring it
+done, rather than relying solely on functional regression tests to surface
+import gaps.
+
+```
 quant-terminal/
-|-- quant_terminal.py          # Dash application: UI layout, state engine, dark CSS, callbacks
-|-- tps_solver.py              # Mathematical engine: Estrada matrix, Crash matrix K, Stage 1/2 SLSQP solvers
-|-- snapshot_store.py          # Persistence engine: Atomic JSON I/O, live yfinance sync, tracking math
-|-- saved_portfolios.json      # Structured persistence layer for out-of-sample portfolio states
-|-- requirements.txt           # Environment dependencies
-`-- PROJECT_CONTEXT.md         # Technical architecture documentation
+|-- app.py                        # Entrypoint. Run this: `python3 app.py`
+|-- requirements.txt
+|-- PROJECT_CONTEXT.md
+|-- saved_portfolios.json         # Snapshot data file (relative path, resolved from CWD)
+|
+|-- engine/                       # Pure math. Zero Dash imports, zero disk/network I/O.
+|   |-- returns.py                #   Composite Forward Upside (mu_i) -- Section 4.2.
+|   |                             #   Etap 2 (Alpha Blend) lands here, and only here.
+|   |-- risk.py                   #   Estrada Sigma_eps (Tikhonov-regularized), drawdowns,
+|   |                             #   CDD quantile floor, Discrete Crash-Overlap Matrix K.
+|   |-- optimizer.py              #   True Two-Stage SLSQP (Section 3.4) + iterative
+|   |                             #   Dynamic Singleton Split (Binding Ceiling Throttle).
+|   |-- evaluation.py             #   Historical/forward backtest evaluation.
+|   `-- clustering.py             #   Semi-covariance, RMT denoising, DTW + K-Medoids.
+|
+|-- data/                         # Persistence + market data I/O. Zero math, zero Dash.
+|   |-- market_data.py            #   ALL yfinance calls -- single source of truth
+|   |                             #   (previously duplicated across Stage 1 ingestion
+|   |                             #   and snapshot_store.py).
+|   `-- snapshot_store.py         #   Snapshot JSON CRUD + forward-return evaluation.
+|
+`-- ui/                           # Dash layout + callbacks. Calls engine/ and data/ only.
+    |-- app_instance.py           #   The shared `app = dash.Dash(...)` object + dark CSS.
+    |-- theme.py                  #   THEME dict, tab styling constants.
+    |-- components.py             #   build_kpi_card, build_param_card, STAGE3/4A constants.
+    |-- layout.py                 #   Assembles app.layout (all 5 tabs, unchanged structure).
+    |-- tab1_market_data.py       #   Stage 1 ingestion + Stage 2 clustering.
+    |-- tab2_fundamentals.py      #   Stage 3 fundamental inputs table.
+    |-- tab3_tailrisk.py          #   Tail-risk analytics + Crash-Overlap visuals.
+    |-- tab4_rebalance.py         #   Stage 4B True Two-Stage SLSQP solver + results.
+    `-- tab5_sandbox.py           #   Forward Tracker / Sandbox.
+```
+
+**Still flat (deliberately, for now):** the 5 `ui/tabN_*.py` files mirror
+today's 5-tab layout as-is -- this is NOT yet the sidebar + 4-module
+structure (Overview / Research-Dossier / Portfolio Rebalance / Sandbox) from
+the v2 roadmap. That reorganization is Etap 3; it reuses these same files
+almost unchanged (tab4 -> Rebalance module, tab5 -> Sandbox module) rather
+than requiring another rewrite of business logic.
+
+**One deliberate non-consolidation:** `data/market_data.py` includes a new
+`fetch_universe_prices()` matching Stage 1's exact fetch logic, built for
+reuse by future modules (e.g. Company Dossier). Stage 1's ingestion callback
+(`ui/tab1_market_data.py`) was deliberately NOT rewired to call it yet --
+doing so would have collapsed two distinct error messages ("yfinance
+returned nothing" vs "yfinance returned data but none of the requested
+tickers resolved") into one, a user-visible behavior change outside Etap 0's
+scope of "no behavior change."
+
+---
+
+## 5b. Etap 1 — Persistent Storage Layer (complete)
+
+Three new/changed `data/` modules, per the v2 storage spec:
+
+- **`data/universe_store.py`** (new) — CRUD for `storage/universe.json`, the
+  master list of tracked companies (`Ticker`, `Name`, `Sector`,
+  `Status: "Active_Screened"|"Watchlist"`, `Last_Updated`). `upsert_company()`
+  merges rather than overwrites — a status-only update doesn't blank out a
+  previously-recorded Name/Sector. Not yet wired into any UI (Etap 3/4).
+- **`data/company_store.py`** (new) — CRUD for
+  `storage/company_history/{TICKER}.json`, one append-only log per ticker.
+  Re-recording the same `Date` updates that entry in place rather than
+  duplicating it. This is the raw material for the future Company Dossier's
+  target-vs-actual chart, and — much later — Etap 6's ML training data;
+  starting the log now is the point, since history can't be backfilled.
+  `days_since_last_update()` is already exposed for the future Overview
+  module's "Data Freshness Tracker".
+- **`data/snapshot_store.py`** (migrated) — was a single
+  `saved_portfolios.json` array file; now one JSON file per snapshot under
+  `storage/portfolio_snapshots/portfolio_{snapshot_id}.json`. Public
+  function names/signatures unchanged (`save_snapshot`, `list_snapshots`,
+  `get_snapshot`, `delete_snapshot`, `rename_snapshot`) except the optional
+  path override parameter renamed `file_path` -> `storage_dir` (safe: no
+  caller in `ui/tab4_rebalance.py` or `ui/tab5_sandbox.py` passed it
+  explicitly). `evaluate_snapshot`/`compute_forward_return`/
+  `holding_days_since` untouched.
+
+**One-time migration:** `scripts/migrate_snapshots_etap1.py` moves records
+out of the old `saved_portfolios.json` into the new layout, preserving the
+original `snapshot_id`/`created_at` exactly (never re-stamped to "now" —
+forward-tracking's holding-day count depends on the real historical creation
+date). Safe by default: prints a dry-run report and writes nothing unless
+`--apply` is passed; never modifies or deletes the old file under any flag.
+Supports a name-substring filter (`NAME_FILTER`, currently
+`"master portfolio forward"`, case-insensitive) so test snapshots don't
+clutter the new storage — per an explicit instruction, only the
+2026-09-01 / 31-ticker snapshot was carried over; `Test 123`,
+`Test (random inputs)`, and `smiec test` were left behind in the old file
+(still there as a backup, just not migrated). Pass `--keep-all` to migrate
+everything instead.
+
+Verified: full CRUD round-trip on all three stores, migration dry-run
+matched the expected 1-kept/3-discarded split, migrated file byte-identical
+in content to the source record (only location changed), and a full app
+integration re-check after the `snapshot_store.py` rewrite (34/34 callbacks,
+Tab 5 reads the migrated snapshot correctly with zero UI code changes).
+
+---
+
+## 5c. Etap 2 — Alpha Blend Parameter (complete)
+
+`engine/returns.py`'s `compute_composite_upside_row()` rewritten per the
+confirmed formula (2026-09-06 conversation):
+
+$$\mu_i = \Big[(1-\alpha)\cdot U_{raw,i}\cdot\exp(-\gamma S_i) + \alpha\cdot G_{i,2Y}\Big]\cdot(1+\kappa\Delta EPS_{90d,i})\cdot\Big(1-\exp(-N_i/N_{ref})\Big)$$
+
+Three design points confirmed before implementation:
+1. **γ is coupled to the (1-α) branch, not independent of α.** At α=1.0 the
+   dispersion penalty drops out entirely — correct, since S_i is a property
+   of analyst *price targets* specifically, with nothing to discount once
+   that branch has zero weight. (An earlier draft had γ applying globally
+   regardless of α, which penalized a pure-EPS-growth estimate for
+   target-price disagreement it was supposed to be ignoring — this was the
+   actual bug that motivated moving γ inside the bracket.)
+2. **G_2Y and ΔEPS_90d are divided by 100 inside this function only**, never
+   in the Stage 3 table itself — data entry stays "55" not "0.55" (unchanged
+   convention, now doubly load-bearing since skipping this scaling would
+   make the EPS-growth branch outweigh the target-price branch by ~100x).
+3. **A(N_i) discounts the whole bracket regardless of α, by design** — confirmed
+   NOT to be coupled the way γ is. Coverage depth is treated as a general
+   forecast-quality signal ("prognozy... jeżeli spółka ma większe pokrycie to
+   zazwyczaj też będą bardziej jakościowe"), not specific to the target-price
+   branch, so it still discounts a pure EPS-growth (α=1.0) estimate.
+
+**Correction made during testing:** an early comment claimed α=0.5 exactly
+reproduces the pre-Etap-2 formula's numbers. Verified false and fixed: the
+confirmed formula also moved where `M_i` (EPS revision momentum) and `A_i`
+(coverage confidence) apply — from "each modifier scoped to its own branch"
+(old formula: `M_i` only multiplied the G-term, `A_i` only multiplied the
+U-term) to "both apply to the whole blended bracket" (new formula) — a
+structural change independent of α's value. No α reproduces the old exact
+numbers; reloading a pre-Etap-2 snapshot in the Sandbox will show different
+(not wrong, just recalculated under the new formula) mu_i than it originally
+did. This is expected under the approved design, not a regression.
+
+**Alpha wired everywhere parameters flow**, not just the formula:
+- `ui/components.py`'s `STAGE4A_PARAMS_CONFIG` gained an `"alpha"` entry
+  (range [0,1], default 0.5) — since Tab 4's param cards, `bundle_stage4a_params`,
+  and `validate_param_badges` are all already loop-driven over this config,
+  adding the one entry was sufficient to create the input card AND get alpha
+  automatically included in the bundled `parameters` dict that
+  `save_snapshot_callback` persists — **no extra code needed there**, alpha
+  reaches the saved snapshot JSON for free as a consequence of that existing
+  loop-driven design.
+- `ui/tab3_tailrisk.py`'s diagnostic summary table gained the same `input-alpha`
+  Input; its `U_adj`/`G_adj` columns were renamed `U_component`/`G_component`
+  to reflect that these are no longer independently-adjusted terms (per the
+  formula restructure above) but raw contributions to the pre-`M_i`/`A_i`
+  bracket.
+- `ui/tab4_rebalance.py`'s `run_stage4b_solver` (explicit, non-loop Input
+  list) gained `Input("input-alpha", "value")` and threads it through to
+  `compute_composite_upside_row`.
+- `ui/tab5_sandbox.py` gained a live `slider-sb-alpha` (Tab 5 already treats
+  λ/γ/κ/w_max/R_f/N_ref as live-recomputed sliders, never frozen
+  snapshot-parameter reads — alpha follows the identical pattern for
+  consistency, `compute_sandbox_allocation`'s `sb_alpha` parameter is never
+  read from `record["parameters"]`).
+
+**Backward compatibility for pre-Etap-2 snapshots (no "alpha" key at all):**
+`compute_composite_upside_row(..., alpha=0.5)` defaults to 0.5 if the caller
+passes `None` or omits it — `engine.returns.DEFAULT_ALPHA`. The one existing
+migrated snapshot (`portfolio_2026-09-01_00-00.json`, Etap 1) was also
+directly backfilled with `"alpha": 0.5` in its `parameters` JSON, so the
+field exists everywhere rather than relying purely on a silent runtime
+fallback -- per an explicit instruction to make sure alpha is present "even
+in the JSON file," with 0.5 as the explicitly agreed default when unspecified.
+
+Verified: engine-level formula tests (γ vanishes at α=1.0, A_i still
+discounts at α=1.0, α∈[0,1] clipping, default=0.5), a full end-to-end
+solver run showing `mu_i_map` flips correctly between α=0.0 and α=1.0 for
+assets with opposite upside/growth profiles, `bundle_stage4a_params`
+confirmed to include `"alpha"` automatically, and a full app integration
+recheck (34/34 callbacks).
 
 ---
 

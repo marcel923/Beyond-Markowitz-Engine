@@ -21,8 +21,16 @@ pip install -r requirements.txt
 
 ## 2. Uruchom
 
+**WAŻNE (po refaktorze Etap 0):** aplikacja to teraz kilka plików w folderach
+`engine/`, `data/`, `ui/`, nie jeden `quant_terminal.py`. Rozpakuj wszystkie
+foldery i pliki do jednego katalogu projektu (struktura musi zostać
+zachowana — `engine/`, `data/`, `ui/` jako podfoldery obok `app.py`), a
+`saved_portfolios.json` zostaje w katalogu głównym, obok `app.py`.
+
+Uruchamiasz teraz `app.py`, nie `quant_terminal.py`:
+
 ```bash
-python3 quant_terminal.py
+python3 app.py
 ```
 
 Terminal w konsoli pokaże coś w stylu:

@@ -1,14 +1,22 @@
 """
-snapshot_store.py
-==================
+data/snapshot_store.py
+========================
 Persistence layer for saved portfolio snapshots ("Forward-Testing / Out-of-Sample
-Logging System"). Pure Python + a bit of yfinance for live price lookups -- no Dash
-code lives here on purpose, same modular split as tps_solver.py.
+Logging System"). Pure Python -- no Dash code lives here on purpose. All
+yfinance calls delegate to data.market_data (Etap 0 architecture split).
+
+Etap 1 storage migration: previously a single "saved_portfolios.json" array
+file holding every snapshot. Migrated to ONE JSON FILE PER SNAPSHOT under
+storage/portfolio_snapshots/ (PROJECT_CONTEXT.md v2 storage spec) -- avoids
+a single growing file being the one thing that can corrupt or merge-conflict
+as snapshots accumulate, and makes each snapshot individually
+diffable/inspectable on disk. See scripts/migrate_snapshots_etap1.py for the
+one-time migration out of the old saved_portfolios.json.
 
 Storage format
 --------------
-A single JSON file (`DEFAULT_FILE_PATH`, default "saved_portfolios.json") holding a
-list of snapshot records, each shaped like:
+storage/portfolio_snapshots/portfolio_{snapshot_id}.json, one JSON OBJECT
+(not a list) per file, shaped like:
 
     {
         "snapshot_id":        "2026-07-31_14-30",
@@ -23,18 +31,29 @@ list of snapshot records, each shaped like:
 
 Writes are done via write-to-temp-then-os.replace to avoid leaving a truncated/corrupt
 file behind if the process is killed mid-write.
+
+`storage_dir` parameter naming note: the public CRUD functions below use the
+same PARAMETER POSITION/keyword-default pattern as before the migration (a
+single optional path override, defaulting to the standard location), just
+renamed from `file_path` to `storage_dir` since it now points at a directory,
+not a single file. No caller in ui/tab4_rebalance.py or ui/tab5_sandbox.py
+passes this argument explicitly (verified before this migration), so the
+rename does not break anything.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-DEFAULT_FILE_PATH = "saved_portfolios.json"
+from data.market_data import fetch_current_prices, fetch_price_history
+
+DEFAULT_STORAGE_DIR = "storage/portfolio_snapshots"
 BENCHMARK_TICKER = "SPY"
 
 
@@ -42,23 +61,53 @@ BENCHMARK_TICKER = "SPY"
 # Low-level file I/O
 # ---------------------------------------------------------------------------
 
-def _read_all(file_path: str = DEFAULT_FILE_PATH) -> List[dict]:
-    """Returns [] if the file doesn't exist yet or is malformed -- never raises."""
-    if not os.path.exists(file_path):
-        return []
+def _snapshot_file_path(snapshot_id: str, storage_dir: str = DEFAULT_STORAGE_DIR) -> str:
+    """Sanitizes snapshot_id for use as a filename -- a no-op for the normal
+    "YYYY-MM-DD_HH-MM[_N]" format (already filesystem-safe), but a defensive
+    guard against anything unexpected ever ending up as a snapshot_id."""
+    safe_id = re.sub(r'[^A-Za-z0-9_\-]', '_', snapshot_id)
+    return os.path.join(storage_dir, f"portfolio_{safe_id}.json")
+
+
+def _read_one(snapshot_id: str, storage_dir: str = DEFAULT_STORAGE_DIR) -> Optional[dict]:
+    path = _snapshot_file_path(snapshot_id, storage_dir)
+    if not os.path.exists(path):
+        return None
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
+        with open(path, "r", encoding="utf-8") as f:
+            record = json.load(f)
+        return record if isinstance(record, dict) else None
     except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _read_all(storage_dir: str = DEFAULT_STORAGE_DIR) -> List[dict]:
+    """Reads every snapshot file in storage_dir. Malformed individual files
+    are silently skipped (never crash the whole listing over one bad file) --
+    same defensive philosophy as the pre-migration single-file reader."""
+    if not os.path.isdir(storage_dir):
         return []
+    snapshots = []
+    for fname in os.listdir(storage_dir):
+        if not (fname.startswith("portfolio_") and fname.endswith(".json")):
+            continue
+        try:
+            with open(os.path.join(storage_dir, fname), "r", encoding="utf-8") as f:
+                record = json.load(f)
+            if isinstance(record, dict):
+                snapshots.append(record)
+        except (json.JSONDecodeError, OSError):
+            continue
+    return snapshots
 
 
-def _write_all(snapshots: List[dict], file_path: str = DEFAULT_FILE_PATH) -> None:
-    tmp_path = file_path + ".tmp"
+def _write_one(record: dict, storage_dir: str = DEFAULT_STORAGE_DIR) -> None:
+    os.makedirs(storage_dir, exist_ok=True)
+    path = _snapshot_file_path(record["snapshot_id"], storage_dir)
+    tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(snapshots, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, file_path)
+        json.dump(record, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, path)
 
 
 def make_snapshot_id() -> str:
@@ -77,10 +126,10 @@ def save_snapshot(
     cluster_of: dict,
     entry_prices: dict,
     z_scores: Optional[dict] = None,
-    file_path: str = DEFAULT_FILE_PATH,
+    storage_dir: str = DEFAULT_STORAGE_DIR,
 ) -> dict:
     """
-    Appends a new snapshot record and persists it to disk. Returns the created record.
+    Writes a new snapshot as its own file and returns the created record.
 
     `z_scores` (optional): per-ticker Z_TR,i tail-risk Z-scores frozen at save time
     (Section 4.1). These are lambda-INDEPENDENT, so storing them lets a later "what-if"
@@ -90,10 +139,8 @@ def save_snapshot(
     z_scores dict as "no frozen risk data available" and degrade gracefully (e.g. assume
     Z=0 / P_i=1 baseline), not crash.
     """
-    snapshots = _read_all(file_path)
-
     base_id = make_snapshot_id()
-    existing_ids = {s.get("snapshot_id") for s in snapshots}
+    existing_ids = {s.get("snapshot_id") for s in _read_all(storage_dir)}
     snapshot_id = base_id
     suffix = 1
     while snapshot_id in existing_ids:
@@ -111,136 +158,42 @@ def save_snapshot(
         "entry_prices": entry_prices,
         "z_scores": z_scores or {},
     }
-    snapshots.append(record)
-    _write_all(snapshots, file_path)
+    _write_one(record, storage_dir)
     return record
 
 
-def list_snapshots(file_path: str = DEFAULT_FILE_PATH) -> List[dict]:
+def list_snapshots(storage_dir: str = DEFAULT_STORAGE_DIR) -> List[dict]:
     """Newest first -- most useful ordering for a dropdown."""
-    snapshots = _read_all(file_path)
+    snapshots = _read_all(storage_dir)
     return sorted(snapshots, key=lambda s: s.get("created_at", ""), reverse=True)
 
 
-def get_snapshot(snapshot_id: str, file_path: str = DEFAULT_FILE_PATH) -> Optional[dict]:
-    for s in _read_all(file_path):
-        if s.get("snapshot_id") == snapshot_id:
-            return s
-    return None
+def get_snapshot(snapshot_id: str, storage_dir: str = DEFAULT_STORAGE_DIR) -> Optional[dict]:
+    return _read_one(snapshot_id, storage_dir)
 
 
-def delete_snapshot(snapshot_id: str, file_path: str = DEFAULT_FILE_PATH) -> bool:
-    snapshots = _read_all(file_path)
-    new_list = [s for s in snapshots if s.get("snapshot_id") != snapshot_id]
-    if len(new_list) == len(snapshots):
+def delete_snapshot(snapshot_id: str, storage_dir: str = DEFAULT_STORAGE_DIR) -> bool:
+    path = _snapshot_file_path(snapshot_id, storage_dir)
+    if not os.path.exists(path):
         return False
-    _write_all(new_list, file_path)
+    os.remove(path)
     return True
 
 
-def rename_snapshot(snapshot_id: str, new_name: str, file_path: str = DEFAULT_FILE_PATH) -> bool:
+def rename_snapshot(snapshot_id: str, new_name: str, storage_dir: str = DEFAULT_STORAGE_DIR) -> bool:
     if not new_name or not new_name.strip():
         return False
-    snapshots = _read_all(file_path)
-    found = False
-    for s in snapshots:
-        if s.get("snapshot_id") == snapshot_id:
-            s["snapshot_name"] = new_name.strip()
-            found = True
-            break
-    if found:
-        _write_all(snapshots, file_path)
-    return found
+    record = _read_one(snapshot_id, storage_dir)
+    if record is None:
+        return False
+    record["snapshot_name"] = new_name.strip()
+    _write_one(record, storage_dir)
+    return True
 
 
 # ---------------------------------------------------------------------------
 # Live price lookups + forward-return math
 # ---------------------------------------------------------------------------
-
-def fetch_current_prices(tickers: List[str]) -> Dict[str, float]:
-    """
-    Single batched yfinance call for a list of tickers -> {ticker: last_close_price}.
-    Tickers that fail to resolve are simply absent from the returned dict (defensive --
-    callers should handle missing tickers rather than assume full coverage).
-
-    Uses period="5d" (not "1d") so a weekend/holiday call still finds a recent close,
-    and explicitly checks for the MultiIndex-columns quirk yfinance has with
-    group_by="ticker" (same fix applied elsewhere in this project for the single-ticker case).
-    """
-    import yfinance as yf
-
-    tickers = list(dict.fromkeys(tickers))  # dedupe, preserve order
-    if not tickers:
-        return {}
-
-    try:
-        df = yf.download(tickers, period="5d", group_by="ticker", threads=False, auto_adjust=True, progress=False)
-    except Exception:
-        return {}
-
-    if df is None or df.empty:
-        return {}
-
-    prices: Dict[str, float] = {}
-    is_multi = isinstance(df.columns, pd.MultiIndex)
-    for t in tickers:
-        try:
-            if is_multi:
-                if t not in df.columns.get_level_values(0):
-                    continue
-                s = df[t]["Close"].dropna()
-            else:
-                s = df["Close"].dropna()
-            if len(s):
-                prices[t] = float(s.iloc[-1])
-        except Exception:
-            continue
-    return prices
-
-
-def fetch_price_history(tickers: List[str], start_date: str) -> "pd.DataFrame":
-    """
-    Batched yfinance call fetching DAILY close prices for a list of tickers from
-    `start_date` (YYYY-MM-DD) through today. Used to reconstruct real forward equity
-    curves since a snapshot's creation date.
-
-    Returns a DataFrame indexed by date, one column per ticker that resolved successfully
-    (missing/failed tickers are simply absent as columns -- callers should check which of
-    their requested tickers actually made it into the result). Returns an empty DataFrame
-    (not an exception) on total failure, so callers can handle "no data" uniformly.
-    """
-    import yfinance as yf
-
-    tickers = list(dict.fromkeys(tickers))
-    if not tickers:
-        return pd.DataFrame()
-
-    try:
-        df = yf.download(tickers, start=start_date, group_by="ticker", threads=False, auto_adjust=True, progress=False)
-    except Exception:
-        return pd.DataFrame()
-
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    is_multi = isinstance(df.columns, pd.MultiIndex)
-    prices = pd.DataFrame(index=df.index)
-    for t in tickers:
-        try:
-            if is_multi:
-                if t not in df.columns.get_level_values(0):
-                    continue
-                prices[t] = df[t]["Close"]
-            else:
-                if "Close" not in df.columns:
-                    continue
-                prices[t] = df["Close"]
-        except Exception:
-            continue
-
-    return prices.dropna(how="all")
-
-
 
 def compute_forward_return(weights: Dict[str, float], entry_prices: Dict[str, float],
                             current_prices: Dict[str, float]) -> Tuple[Optional[float], float]:
