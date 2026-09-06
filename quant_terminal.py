@@ -558,18 +558,18 @@ def build_stage3_summary(rows):
 # ============================================================
 
 STAGE4A_PARAMS_CONFIG = [
-    {"id": "lambda", "name": "Lambda", "symbol": "λ", "default": 3.0, "min": 0.5, "max": 15.0, "step": 0.5,
+    {"id": "lambda", "name": "Lambda", "symbol": "λ", "default": 3.0, "min": 0.1, "max": 25.0, "step": 0.1,
      "comment": "Crash-overlap penalty sensitivity: exp(λ·√(wᵀKw)). Rescaled for the K-based quadratic penalty (Section 3.3/3.4) — √(wᵀKw) typically runs ≈0.05–0.20, so λ needs a much wider range than the old per-asset Z-score exponent did to have a comparable effect."},
-    {"id": "gamma", "name": "Gamma", "symbol": "γ", "default": 1.50, "min": 1.00, "max": 2.50,
+    {"id": "gamma", "name": "Gamma", "symbol": "γ", "default": 1.50, "min": 0.10, "max": 5.00, "step": 0.10,
      "comment": "Analyst range spread penalty. Disincentivizes stocks with wide target price disagreements."},
-    {"id": "kappa", "name": "Kappa", "symbol": "κ", "default": 1.00, "min": 0.50, "max": 2.00,
+    {"id": "kappa", "name": "Kappa", "symbol": "κ", "default": 1.00, "min": 0.00, "max": 5.00, "step": 0.10,
      "comment": "Sensitivity to 90-day EPS consensus revisions (short-term earnings momentum)."},
-    {"id": "nref", "name": "N_ref", "symbol": "N_ref", "default": 8.0, "min": 5, "max": 15,
+    {"id": "nref", "name": "N_ref", "symbol": "N_ref", "default": 8.0, "min": 3, "max": 30,
      "comment": "Reference analyst coverage threshold for maximum confidence factor A_i."},
-    {"id": "wmax", "name": "Max Asset Weight", "symbol": "w_max", "default": 0.30, "min": 0.10, "max": 0.50, "step": 0.05,
+    {"id": "wmax", "name": "Max Asset Weight", "symbol": "w_max", "default": 0.30, "min": 0.05, "max": 1.00, "step": 0.05,
      "comment": "Hard single-stock concentration cap (e.g., 0.30 = max 30% weight per stock). Enforced as a bound directly in the Stage 2 SLSQP; if Stage 1's intra-cluster concentration makes this infeasible, the Singleton Split procedure automatically carves the dominant asset(s) into their own capped micro-cluster — see the alert panel below the results."},
-    {"id": "rf", "name": "Risk-Free Rate", "symbol": "R_f", "default": 0.045, "min": 0.0, "max": 0.10,
-     "comment": "Annualized risk-free rate (e.g., 10Y Treasury yield) — TPS hurdle rate. Ręczne wejście, brak automatycznego pobierania ^TNX (zgodnie z zasadą 'dane manualne')."},
+    {"id": "rf", "name": "Risk-Free Rate", "symbol": "R_f", "default": 0.045, "min": 0.0, "max": 0.25, "step": 0.005,
+     "comment": "Annualized risk-free / qualitative hurdle rate. Ręczne wejście, brak automatycznego pobierania ^TNX (zgodnie z zasadą 'dane manualne')."},
 ]
 
 def build_param_card(cfg):
@@ -1100,20 +1100,27 @@ app.layout = html.Div(style={
                                          style={"fontSize": "10px", "color": THEME["text_dim"], "marginBottom": "22px", "lineHeight": "1.6"}),
 
                                 html.Label("LAMBDA — kara za współkrach (λ, K = J⊙S)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px"}),
-                                dcc.Slider(id="slider-sb-lambda", min=0.5, max=15.0, step=0.5, value=3.0, marks={0.5: "0.5", 5: "5", 10: "10", 15: "15"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                dcc.Slider(id="slider-sb-lambda", min=0.1, max=25.0, step=0.1, value=3.0, marks={0.1: "0.1", 5: "5", 10: "10", 15: "15", 25: "25"}, tooltip={"placement": "bottom", "always_visible": True}),
 
                                 html.Label("GAMMA — kara za rozstrzał widełek (γ)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
-                                dcc.Slider(id="slider-sb-gamma", min=0.5, max=3.0, step=0.1, value=1.5, marks={1: "1", 2: "2", 3: "3"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                dcc.Slider(id="slider-sb-gamma", min=0.1, max=5.0, step=0.1, value=1.5, marks={0.1: "0.1", 1: "1", 2.5: "2.5", 5: "5"}, tooltip={"placement": "bottom", "always_visible": True}),
 
                                 html.Label("KAPPA — momentum rewizji EPS (κ)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
-                                dcc.Slider(id="slider-sb-kappa", min=0.0, max=3.0, step=0.1, value=1.0, marks={0: "0", 1.5: "1.5", 3: "3"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                dcc.Slider(id="slider-sb-kappa", min=0.0, max=5.0, step=0.1, value=1.0, marks={0: "0", 2.5: "2.5", 5: "5"}, tooltip={"placement": "bottom", "always_visible": True}),
 
                                 html.Label("MAX SINGLE WEIGHT (w_max)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
-                                dcc.Slider(id="slider-sb-wmax", min=0.1, max=0.5, step=0.05, value=0.30, marks={0.1: "10%", 0.3: "30%", 0.5: "50%"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                dcc.Slider(id="slider-sb-wmax", min=0.05, max=1.0, step=0.05, value=0.30, marks={0.05: "5%", 0.3: "30%", 0.6: "60%", 1.0: "100%"}, tooltip={"placement": "bottom", "always_visible": True}),
 
-                                html.Div(style={"borderTop": "1px solid #30363D", "margin": "24px 0 16px 0"}),
-                                html.Div("WEIGHT BREAKDOWN: ORIGINAL vs SANDBOX", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginBottom": "10px"}),
-                                html.Div(id="sandbox-weights-table-container")
+                                html.Label("RISK-FREE RATE — hurdle rate (R_f)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
+                                dcc.Slider(id="slider-sb-rf", min=0.0, max=0.25, step=0.005, value=0.045, marks={0.0: "0%", 0.10: "10%", 0.25: "25%"}, tooltip={"placement": "bottom", "always_visible": True}),
+
+                                html.Label("N_ref — próg pokrycia analityków (A_i)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
+                                dcc.Slider(id="slider-sb-nref", min=3, max=30, step=1, value=8, marks={3: "3", 15: "15", 30: "30"}, tooltip={"placement": "bottom", "always_visible": True}),
+
+                                html.Div(style={"borderTop": "1px solid #30363D", "margin": "24px 0 0 0", "paddingTop": "14px"}, children=[
+                                    html.Div("SANDBOX PORTFOLIO METRICS", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginBottom": "10px"}),
+                                    html.Div(id="sandbox-mini-kpi-row")
+                                ])
                             ]),
 
                             # PRAWA KOLUMNA: WYKRESY
@@ -1145,6 +1152,18 @@ app.layout = html.Div(style={
                                     ])
                                 ])
                             ])
+                        ]),
+
+                        # --- SEKCJA PEŁNEJ SZEROKOŚCI: SZCZEGÓŁOWA TABELA WAG (Original vs Sandbox) ---
+                        html.Div(style={"borderTop": f"1px solid {THEME['border']}", "margin": "30px 0"}),
+                        html.Div(style={"padding": "24px", "backgroundColor": "#161B22", "borderRadius": "16px", "border": "1px solid #30363D"}, children=[
+                            html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "6px", "flexWrap": "wrap", "gap": "10px"}, children=[
+                                html.Div("WEIGHT BREAKDOWN: ORIGINAL vs SANDBOX (pełne dane, aktualizowane na żywo z suwakami)",
+                                         style={"fontSize": "11px", "fontWeight": "bold", "color": "#FFFFFF", "letterSpacing": "0.5px"}),
+                            ]),
+                            html.Div("Kolumna Sandbox przelicza się natychmiast po zmianie dowolnego suwaka (λ, γ, κ, w_max, R_f, N_ref) — dokładnie tym samym silnikiem True Two-Stage SLSQP + Singleton Split co Tab 4.",
+                                     style={"fontSize": "10px", "color": THEME["text_dim"], "marginBottom": "16px", "lineHeight": "1.5"}),
+                            html.Div(id="sandbox-weights-table-container")
                         ])
                     ])
                 ])
@@ -2159,7 +2178,7 @@ def cap_weights_iteratively(weights, cap, max_iter=100):
     total = w.sum()
     return (w / total) if total > 1e-9 else pd.Series(1.0 / n, index=weights.index), False
 
-def compute_sandbox_allocation(record, tickers, risk_prices, sb_lambda, sb_gamma, sb_kappa, sb_wmax):
+def compute_sandbox_allocation(record, tickers, risk_prices, sb_lambda, sb_gamma, sb_kappa, sb_wmax, sb_rf, sb_nref):
     """
     Przelicza wagi 'sandbox' NA ŻYWO -- dokładnie tym samym silnikiem
     ts.run_optimization_with_singleton_split() (True Two-Stage SLSQP + Section
@@ -2169,41 +2188,38 @@ def compute_sandbox_allocation(record, tickers, risk_prices, sb_lambda, sb_gamma
     solvera -- to teraz czysto historyczny artefakt, nieużywany tutaj wcale
     (zastąpiony przez K; zostawiony tylko w Tab 4's diagnostycznej tabeli).
 
+    `sb_rf` / `sb_nref` to TERAZ żywe suwaki sandboxa (Tab 5), a NIE wartości
+    zamrożone w `record["parameters"]` w dniu zapisu -- wcześniej R_f i N_ref
+    było w ogóle niemożliwe zmienić w sandboxie, co było realnym brakiem
+    funkcjonalności (nie dało się np. sprawdzić "co by było, gdyby stopa wolna
+    od ryzyka wzrosła o 2pp" bez tworzenia nowego snapshotu). λ, γ, κ, w_max
+    już wcześniej były suwakami -- teraz komplet 6 parametrów solvera jest
+    edytowalny w locie.
+
     WAŻNE: `risk_prices` to SUROWE ceny (mogą zawierać NaN -- różne kalendarze
     giełd, patrz `compute_crash_overlap_matrix`), okno 5 lat wstecz (~1260 sesji)
     od dziś, używane WYŁĄCZNIE do estymacji Sigma_eps i K -- celowo NIE to samo
     okno co equity curve (które zaczyna się dopiero w dniu zapisu snapshotu).
-    Gdyby ryzyko liczyć tylko z okresu "od zapisu", świeży snapshot (sprzed
-    kilku dni) nigdy nie miałby wystarczająco sesji i sandbox zawsze spadałby
-    na equal-weight niezależnie od suwaków. Zmiana z 2Y na 5Y (ustalenie z
-    refaktoryzacji solvera): K i Sigma_eps mają teraz szansę złapać
-    wieloletnie cykle i głębokie historyczne korekty, nie tylko ostatnie 2 lata.
 
-    NaN-y w `risk_prices` (ragged multi-exchange calendars) są celowo NIE
-    usuwane przed przekazaniem do `compute_crash_overlap_matrix` -- ta funkcja
-    ma własną, poprawną obsługę (Option A, patrz tps_solver.py), a wcześniejsze
-    zrzucenie NaN-ów na tym etapie zniszczyłoby dokładnie to, co Option A ma
-    chronić. Dla Sigma_eps (macierz Estrady) NADAL potrzebny jest czysty,
-    wspólny indeks dat -- stąd `.dropna()` tylko lokalnie, przy budowie
-    `returns_window`.
-
-    `cap_weights_iteratively` (poniżej) jest tu teraz WYŁĄCZNIE zapasową siatką
-    bezpieczeństwa dla ścieżek fallback (equal-weight przy zbyt małej ilości
-    danych) -- na ścieżce solvera w_max jest już wymuszony przez same bounds
-    SLSQP + automatyczny Singleton Split, więc w praktyce nic tam nie przycina.
-
-    Zwraca (weights: pd.Series, note: str|None).
+    Zwraca (weights: pd.Series, note: str|None, extra: dict) gdzie `extra` zawiera:
+        "cluster_of"       : dict {ticker: cluster_label} -- struktura PO ewentualnym
+                              Singleton Split w tym konkretnym przebiegu sandboxa
+                              (może się różnić od oryginalnego zapisanego cluster_of,
+                              bo inne suwaki = inna koncentracja = inny wynik splitu).
+        "promoted_tickers" : list[str] -- puste jeśli split się nie uruchomił.
+        "mu_vec"           : dict {ticker: mu_i} pod BIEŻĄCYMI suwakami (γ, κ, N_ref).
+        "mu_p", "delta_p", "k_penalty_p", "tps_p" : float|None -- metryki portfela
+                              sandboxa na poziomie całości (None przy fallbacku equal-weight).
     """
     fund_by_ticker = {r["Ticker"]: r for r in record.get("fundamental_inputs", [])}
-    cluster_of = record.get("cluster_of", {t: 1 for t in tickers})
-    frozen_params = record.get("parameters", {}) or {}
-    rf = frozen_params.get("rf", 0.045)
-    n_ref = frozen_params.get("nref", 8.0) or 8.0
+    cluster_of_orig = record.get("cluster_of", {t: 1 for t in tickers})
 
-    mu_vec = pd.Series({t: compute_composite_upside_row(fund_by_ticker.get(t, {}), sb_gamma, sb_kappa, n_ref)["mu_i"] for t in tickers})
+    mu_vec = pd.Series({t: compute_composite_upside_row(fund_by_ticker.get(t, {}), sb_gamma, sb_kappa, sb_nref)["mu_i"] for t in tickers})
 
     equal_weight_fallback = pd.Series(1.0 / len(tickers), index=tickers)
     note = None
+    extra = {"cluster_of": dict(cluster_of_orig), "promoted_tickers": [], "mu_vec": mu_vec.to_dict(),
+             "mu_p": None, "delta_p": None, "k_penalty_p": None, "tps_p": None}
 
     if risk_prices.shape[1] >= 2 and len(risk_prices) >= 20:
         returns_window = np.log(risk_prices / risk_prices.shift(1)).dropna()
@@ -2211,14 +2227,20 @@ def compute_sandbox_allocation(record, tickers, risk_prices, sb_lambda, sb_gamma
             usable_tickers = list(returns_window.columns)
             clusters_dict = {}
             for t in usable_tickers:
-                clusters_dict.setdefault(cluster_of.get(t, 1), []).append(t)
+                clusters_dict.setdefault(cluster_of_orig.get(t, 1), []).append(t)
             try:
                 sigma_sb = ts.compute_estrada_matrix(returns_window)
                 crash_sb = ts.compute_crash_overlap_matrix(risk_prices[usable_tickers], quantile=0.10)
                 split_result = ts.run_optimization_with_singleton_split(
-                    mu_vec.reindex(usable_tickers), sigma_sb, crash_sb["K"], clusters_dict, sb_lambda, w_max=sb_wmax, Rf=rf
+                    mu_vec.reindex(usable_tickers), sigma_sb, crash_sb["K"], clusters_dict, sb_lambda, w_max=sb_wmax, Rf=sb_rf
                 )
                 w_raw = split_result["final"]["weights"].reindex(tickers).fillna(0.0)
+                extra["cluster_of"] = {t: ck for ck, members in split_result["final_clusters_dict"].items() for t in members}
+                extra["promoted_tickers"] = split_result["promoted_tickers"]
+                extra["mu_p"] = split_result["final"]["mu_p"]
+                extra["delta_p"] = split_result["final"]["delta_p"]
+                extra["k_penalty_p"] = split_result["final"]["k_penalty_p"]
+                extra["tps_p"] = split_result["final"]["tps_p"]
                 if split_result["split_triggered"]:
                     note = f"⚡ Auto-promocja do singletona ({split_result['n_passes']} przebiegi): {', '.join(split_result['promoted_tickers'])}."
             except Exception:
@@ -2235,28 +2257,29 @@ def compute_sandbox_allocation(record, tickers, risk_prices, sb_lambda, sb_gamma
     if cap_infeasible:
         n_assets = len(tickers)
         note = (note + " " if note else "") + f"w_max={sb_wmax:.2f} zbyt restrykcyjny dla {n_assets} aktywów (N×w_max={n_assets*sb_wmax:.2f} < 1.0) — użyto equal-weight zamiast alokacji."
-    return w_final, note
+    return w_final, note, extra
 
 @app.callback(
     Output("kpi-summary-row", "children"), Output("sandbox-weights-table-container", "children"),
     Output("graph-forward-equity-curves", "figure"), Output("graph-asset-returns-bar", "figure"),
     Output("graph-forward-drawdowns", "figure"), Output("snapshot-meta-info", "children"),
+    Output("sandbox-mini-kpi-row", "children"),
     Input("dropdown-snapshot-select", "value"), Input("slider-sb-lambda", "value"), Input("slider-sb-gamma", "value"),
-    Input("slider-sb-kappa", "value"),
+    Input("slider-sb-kappa", "value"), Input("slider-sb-rf", "value"), Input("slider-sb-nref", "value"),
     Input("slider-sb-wmax", "value"), Input("checklist-benchmarks", "value"), Input("btn-refresh-live", "n_clicks"),
     prevent_initial_call=True
 )
-def update_forward_tracker(snapshot_id, sb_lambda, sb_gamma, sb_kappa, sb_wmax, benchmarks, _):
+def update_forward_tracker(snapshot_id, sb_lambda, sb_gamma, sb_kappa, sb_rf, sb_nref, sb_wmax, benchmarks, _):
     empty_fig = go.Figure()
     empty_fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"])
     empty_msg_style = {"color": THEME["text_dim"], "fontSize": "12px"}
 
     if not snapshot_id:
-        return [], html.Div("Wybierz zapisany portfel z listy powyżej.", style=empty_msg_style), empty_fig, empty_fig, empty_fig, ""
+        return [], html.Div("Wybierz zapisany portfel z listy powyżej.", style=empty_msg_style), empty_fig, empty_fig, empty_fig, "", []
 
     record = snap.get_snapshot(snapshot_id)
     if not record:
-        return [], html.Div("Nie znaleziono snapshotu (mógł zostać usunięty).", style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, ""
+        return [], html.Div("Nie znaleziono snapshotu (mógł zostać usunięty).", style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, "", []
 
     created_at_full = record.get("created_at", "")
     created_at = created_at_full[:10] if created_at_full else "?"
@@ -2266,7 +2289,7 @@ def update_forward_tracker(snapshot_id, sb_lambda, sb_gamma, sb_kappa, sb_wmax, 
     orig_weights = pd.Series(record.get("final_weights", {}))
     tickers = list(orig_weights.index)
     if not tickers:
-        return [], html.Div("Snapshot nie zawiera żadnych aktywów.", style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info
+        return [], html.Div("Snapshot nie zawiera żadnych aktywów.", style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info, []
 
     # Pobieramy DŁUGIE okno (5 lat wstecz od dnia zapisu, aż do dziś) w JEDNYM zapytaniu --
     # ryzyko (Sigma_eps + K) liczymy z ostatniej, świeżej części tego okna (zawsze wystarczająco
@@ -2282,7 +2305,7 @@ def update_forward_tracker(snapshot_id, sb_lambda, sb_gamma, sb_kappa, sb_wmax, 
 
     if full_prices.empty:
         msg = "Błąd pobierania danych z Yahoo (rate limit / brak połączenia?) — spróbuj ponownie za chwilę."
-        return [], html.Div(msg, style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info
+        return [], html.Div(msg, style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info, []
 
     # RAW (bez dropna!) -- ragged multi-exchange NaN-y są potrzebne compute_crash_overlap_matrix
     # (Option A, per-para przecięcie dat); compute_sandbox_allocation robi lokalny .dropna()
@@ -2292,18 +2315,18 @@ def update_forward_tracker(snapshot_id, sb_lambda, sb_gamma, sb_kappa, sb_wmax, 
 
     if prices.empty or len(prices) < 2:
         msg = "Za mało sesji giełdowych od dnia zapisu, żeby narysować krzywą equity (za świeży snapshot — wróć za dzień/dwa)."
-        return [], html.Div(msg, style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info
+        return [], html.Div(msg, style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info, []
 
     missing_tickers = [t for t in tickers if t not in prices.columns]
     stock_prices = prices[[t for t in tickers if t in prices.columns]].dropna(how="any")
     if stock_prices.shape[1] == 0 or len(stock_prices) < 2:
-        return [], html.Div("Brak wspólnych danych cenowych dla żadnej spółki z portfela.", style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info
+        return [], html.Div("Brak wspólnych danych cenowych dla żadnej spółki z portfela.", style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info, []
 
     valid_tickers = list(stock_prices.columns)
     stock_returns = stock_prices.pct_change().fillna(0.0)
 
-    manual_weights, sandbox_note = compute_sandbox_allocation(
-        record, valid_tickers, risk_prices_full, sb_lambda, sb_gamma, sb_kappa, sb_wmax
+    manual_weights, sandbox_note, sandbox_extra = compute_sandbox_allocation(
+        record, valid_tickers, risk_prices_full, sb_lambda, sb_gamma, sb_kappa, sb_wmax, sb_rf, sb_nref
     )
 
     # --- EQUITY CURVES (proste zwroty -- jedyny poprawny sposób na kompoundowanie do V_t) ---
@@ -2368,19 +2391,59 @@ def update_forward_tracker(snapshot_id, sb_lambda, sb_gamma, sb_kappa, sb_wmax, 
         yaxis=dict(ticksuffix="%", gridcolor="#1E1E28"), xaxis=dict(gridcolor="#1E1E28"), showlegend=False
     )
 
-    tbl_rows = [{
-        "Ticker": t, "Original": f"{orig_weights.get(t, 0.0)*100:.1f}%",
-        "Sandbox": f"{manual_weights.get(t, 0.0)*100:.1f}%", "Return": f"{asset_perf.get(t, 0.0):+.1f}%"
-    } for t in valid_tickers]
+    promoted_set = set(sandbox_extra.get("promoted_tickers", []))
+    cluster_of_sb = sandbox_extra.get("cluster_of", {})
+    mu_vec_sb = sandbox_extra.get("mu_vec", {})
+
+    tbl_rows = []
+    for t in valid_tickers:
+        orig_w = orig_weights.get(t, 0.0)
+        sb_w = manual_weights.get(t, 0.0)
+        ret = asset_perf.get(t, 0.0)
+        cluster_label = cluster_of_sb.get(t, "—")
+        cluster_display = f"★ {cluster_label}" if t in promoted_set else cluster_label
+        tbl_rows.append({
+            "Ticker": t,
+            "Cluster": cluster_display,
+            "Original": orig_w * 100.0,
+            "Sandbox": sb_w * 100.0,
+            "Delta": (sb_w - orig_w) * 100.0,
+            "MuI": mu_vec_sb.get(t, 0.0) * 100.0,
+            "Return": ret,
+            "Contribution": sb_w * ret,
+        })
+    tbl_rows.sort(key=lambda r: r["Sandbox"], reverse=True)
+
     weights_table = dash_table.DataTable(
-        columns=[{"name": c, "id": c} for c in ["Ticker", "Original", "Sandbox", "Return"]], data=tbl_rows, page_size=10,
-        style_header={'backgroundColor': '#0B0B0E', 'color': THEME['text_white'], 'fontWeight': 'bold', 'border': '1px solid #222230', 'fontSize': '10px'},
-        style_data={'backgroundColor': '#161B22', 'color': THEME['text_white'], 'border': '1px solid #30363D', 'fontSize': '11px'},
-        style_cell={'padding': '6px', 'textAlign': 'center'}
+        columns=[
+            {"name": "Ticker", "id": "Ticker"},
+            {"name": "Cluster (Sandbox)", "id": "Cluster"},
+            {"name": "Original Weight", "id": "Original", "type": "numeric", "format": {"specifier": ".1f"}},
+            {"name": "Sandbox Weight", "id": "Sandbox", "type": "numeric", "format": {"specifier": ".1f"}},
+            {"name": "Δ (pp)", "id": "Delta", "type": "numeric", "format": {"specifier": "+.1f"}},
+            {"name": "μ_i (sandbox)", "id": "MuI", "type": "numeric", "format": {"specifier": "+.1f"}},
+            {"name": "Return Since Entry", "id": "Return", "type": "numeric", "format": {"specifier": "+.1f"}},
+            {"name": "Contribution to Return", "id": "Contribution", "type": "numeric", "format": {"specifier": "+.2f"}},
+        ],
+        data=tbl_rows, page_size=15, sort_action='native',
+        style_header={'backgroundColor': '#0B0B0E', 'color': THEME['text_white'], 'fontWeight': 'bold', 'border': '1px solid #222230', 'fontSize': '11px', 'padding': '10px'},
+        style_data={'backgroundColor': '#161B22', 'color': THEME['text_white'], 'border': '1px solid #30363D', 'fontSize': '12px'},
+        style_cell={'padding': '9px', 'textAlign': 'center'},
+        style_cell_conditional=[{'if': {'column_id': 'Ticker'}, 'fontWeight': 'bold', 'textAlign': 'left', 'color': THEME['purple']}],
+        style_data_conditional=[
+            {'if': {'filter_query': '{Cluster} contains "★"', 'column_id': 'Cluster'}, 'color': THEME['orange'], 'fontWeight': 'bold'},
+            {'if': {'filter_query': '{Delta} > 0', 'column_id': 'Delta'}, 'color': '#00E5A0'},
+            {'if': {'filter_query': '{Delta} < 0', 'column_id': 'Delta'}, 'color': THEME['orange']},
+            {'if': {'filter_query': '{Return} > 0', 'column_id': 'Return'}, 'color': '#00E5A0'},
+            {'if': {'filter_query': '{Return} < 0', 'column_id': 'Return'}, 'color': THEME['orange']},
+            {'if': {'filter_query': '{Contribution} > 0', 'column_id': 'Contribution'}, 'color': '#00E5A0'},
+            {'if': {'filter_query': '{Contribution} < 0', 'column_id': 'Contribution'}, 'color': THEME['orange']},
+            {'if': {'filter_query': '{Sandbox} = 0', 'column_id': 'Sandbox'}, 'color': THEME['text_dim']},
+        ]
     )
     weights_children = [weights_table]
     if sandbox_note:
-        weights_children.append(html.Div(f"ℹ {sandbox_note}", style={"color": THEME["text_dim"], "fontSize": "10px", "marginTop": "8px"}))
+        weights_children.append(html.Div(f"ℹ {sandbox_note}", style={"color": THEME["text_dim"], "fontSize": "10px", "marginTop": "10px"}))
     if missing_tickers:
         weights_children.append(html.Div(f"Brak danych live dla: {', '.join(missing_tickers)}", style={"color": THEME["orange"], "fontSize": "10px", "marginTop": "6px"}))
 
@@ -2404,7 +2467,20 @@ def update_forward_tracker(snapshot_id, sb_lambda, sb_gamma, sb_kappa, sb_wmax, 
         build_kpi_card("ALPHA vs SPY", alpha_vs_spy_str, sub_str="Same holding period"),
     ]
 
-    return kpi_cards, html.Div(weights_children), fig_eq, fig_bar, fig_dd, meta_info
+    # Mini KPI sandboxa -- metryki portfela POD BIEŻĄCYMI suwakami (parytet z KPI Tab 4),
+    # osobne od kpi_cards powyżej (te opisują zapisany, oryginalny portfel od dnia zapisu).
+    def _fmt_pct(v):
+        return f"{v*100:+.1f}%" if isinstance(v, (int, float)) else "N/A"
+    def _fmt_num(v):
+        return f"{v:.2f}" if isinstance(v, (int, float)) else "N/A"
+
+    mini_kpi = [
+        build_kpi_card("μ_P (sandbox)", _fmt_pct(sandbox_extra.get("mu_p")), sub_str="Expected return"),
+        build_kpi_card("δ_P (sandbox)", _fmt_pct(sandbox_extra.get("delta_p")), sub_str="Downside risk"),
+        build_kpi_card("TPS_P (sandbox)", _fmt_num(sandbox_extra.get("tps_p")), sub_str="Tail-Penalized Sortino", color=THEME["purple"]),
+    ]
+
+    return kpi_cards, html.Div(weights_children), fig_eq, fig_bar, fig_dd, meta_info, mini_kpi
 
 @app.callback(
     Output("store-stage4a-tailrisk", "data"), Output("dropdown-stage4a-stock", "options"), Output("dropdown-stage4a-stock", "value"),
