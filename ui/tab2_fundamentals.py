@@ -192,5 +192,5 @@ def confirm_stage3_export(n_clicks, table_data):
     missing_price = [r["Ticker"] for r in table_data if not r.get("Current Price (P0)")]
     warning = f" — Brak ceny dla: {', '.join(missing_price)}" if missing_price else ""
     msg = html.Span(f"Zablokowano {n_assets} aktywów w {n_clusters} klastrach — gotowe dla Stage 4.{warning}",
-                     style={"color": THEME["orange"] if missing_price else THEME["purple"], "fontWeight": "bold"})
+                     style={"color": THEME["orange"] if missing_price else THEME["accent"], "fontWeight": "bold"})
     return table_data, msg

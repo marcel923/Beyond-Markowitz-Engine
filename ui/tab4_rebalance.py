@@ -19,7 +19,7 @@ from dash.dependencies import Input, Output, State
 
 from ui.app_instance import app
 from ui.theme import THEME, CLUSTER_PALETTE
-from ui.components import build_kpi_card, STAGE4A_PARAMS_CONFIG
+from ui.components import build_kpi_card, build_kpi_strip, STAGE4A_PARAMS_CONFIG
 from ui.tab3_tailrisk import compute_tail_penalty
 from engine.risk import compute_estrada_matrix, semideviation_ann_from_matrix
 from engine.optimizer import compute_asset_tps, run_stage2_inter_cluster_slsqp, run_optimization_with_singleton_split
@@ -200,13 +200,13 @@ def render_stage4b_results(results):
             "borderRadius": "12px", "marginBottom": "25px", "fontSize": "12px"
         })
 
-    # --- KPI cards ---
-    kpi_cards = [
-        build_kpi_card("OPTIMIZED EXPECTED RETURN (μ_P)", f"{results['mu_p']*100:+.1f}%"),
-        build_kpi_card("ANNUALIZED DOWNSIDE RISK (δ_P)", f"{results['delta_p']*100:.1f}%"),
-        build_kpi_card("10% TAIL RISK FLOOR (CDD 0.10,P)", f"-{results['cdd_p']*100:.1f}%", color=THEME["orange"]),
-        build_kpi_card("PORTFOLIO TPS SCORE (TPS_P)", f"{results['tps_p']:.2f}", color=THEME["purple"]),
-    ]
+    # --- KPI strip (jedna zrosnieta belka, nie osobne plywajace karty) ---
+    kpi_cards = build_kpi_strip([
+        {"label": "OPTIMIZED EXPECTED RETURN (μ_P)", "value": f"{results['mu_p']*100:+.1f}%"},
+        {"label": "ANNUALIZED DOWNSIDE RISK (δ_P)", "value": f"{results['delta_p']*100:.1f}%"},
+        {"label": "10% TAIL RISK FLOOR (CDD 0.10,P)", "value": f"-{results['cdd_p']*100:.1f}%", "color": THEME["neg"]},
+        {"label": "PORTFOLIO TPS SCORE (TPS_P)", "value": f"{results['tps_p']:.2f}", "color": THEME["accent"]},
+    ])
 
     # --- Weights table ---
     # Promowane (auto-singleton) tickery dostają "★" w kolumnie Cluster + czerwono-pomarańczowy font
@@ -409,7 +409,7 @@ def save_snapshot_callback(n_clicks, snapshot_name, stage4b_results, stage3_payl
 
     spy_note = "" if "SPY" in entry_prices else " (nie udało się pobrać ceny SPY na benchmark)"
     status = html.Span(f"Zapisano: \"{record['snapshot_name']}\" ({record['snapshot_id']}){spy_note}",
-                        style={"color": THEME["purple"], "fontWeight": "bold"})
+                        style={"color": THEME["accent"], "fontWeight": "bold"})
     return status, (counter or 0) + 1
 
 

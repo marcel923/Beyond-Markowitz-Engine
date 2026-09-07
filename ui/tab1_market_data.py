@@ -29,8 +29,8 @@ except ImportError:
     SKLEARN_AVAILABLE = False
 
 from ui.app_instance import app
-from ui.theme import THEME, CLUSTER_PALETTE, CHART_COLORS
-from ui.components import generate_tws_matrix_styles
+from ui.theme import THEME, CLUSTER_PALETTE, CHART_COLORS, MATRIX_COLORSCALE, MATRIX_SEQUENTIAL_COLORSCALE
+from ui.components import generate_tws_matrix_styles, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule
 from engine.clustering import (
     compute_semicovariance_matrix, semicov_to_semicorr, rmt_denoise_correlation,
     compute_elbow_eps, dtw_distance, compute_dtw_distance_matrix, kmedoids,
@@ -214,7 +214,7 @@ def run_stage_01_ingestion(n_clicks, raw_input):
         else:
             valid_tickers = tickers if not df_raw.empty else []
 
-        tags = [html.Div(vt, style={"padding": "10px 20px", "background": "rgba(111, 44, 255, 0.12)", "border": f"1px solid {THEME['purple']}", "borderRadius": "24px", "fontSize": "13px"}) for vt in valid_tickers]
+        tags = [html.Div(vt, style={"padding": "10px 20px", "background": "rgba(111, 44, 255, 0.12)", "border": f"1px solid {THEME['accent']}", "borderRadius": "24px", "fontSize": "13px"}) for vt in valid_tickers]
         display = {"display": "block", "marginBottom": "35px"}
 
         if not valid_tickers: return [], None, [], {"display": "none"}, {"display": "none"}, {"display": "none"}, "", "", None, None, None, None, "SYSTEM ERR // NO VALID TICKERS FOUND."
@@ -263,10 +263,10 @@ def run_stage_01_ingestion(n_clicks, raw_input):
 
         data_records = [{'Ticker': r['Ticker'], **{t: r[t] for t in active_ts}} for _, r in grid_df.iterrows()]
         table = dash_table.DataTable(
-            columns=columns, data=data_records, style_data_conditional=generate_tws_matrix_styles(grid_df, active_ts),
-            style_header={'backgroundColor': '#0B0B0E', 'color': THEME['text_white'], 'fontWeight': 'bold', 'border': '1px solid #222230', 'padding': '12px'},
-            style_data={'backgroundColor': THEME['bg_card'], 'color': THEME['text_white'], 'border': '1px solid #1E1E28', 'padding': '12px'},
-            style_cell={'textAlign': 'center'},
+            columns=columns, data=data_records, style_data_conditional=[datatable_row_alt_rule()] + generate_tws_matrix_styles(grid_df, active_ts),
+            style_header=datatable_style_header(),
+            style_data=datatable_style_data(),
+            style_cell={'textAlign': 'center', 'fontVariantNumeric': 'tabular-nums'},
             style_cell_conditional=[{'if': {'column_id': 'Ticker'}, 'textAlign': 'left', 'fontWeight': 'bold', 'color': THEME['text_dim'], 'width': '110px'}]
         )
         return ([{"label": tx, "value": tx} for tx in valid_tickers], valid_tickers[0], tags, display, display, display,
@@ -316,7 +316,7 @@ def suggest_k_callback(n_clicks, method, monthly_returns_data, daily_returns_dat
 
     scores_txt = "  |  ".join([f"k={k}: {v:.3f}" + (" (best)" if k == best_k else "") for k, v in sorted(scores.items())])
     return html.Div([
-        html.Span(f"Sugerowane k = {best_k} (silhouette score = {scores[best_k]:.3f}). ", style={"color": THEME["purple"], "fontWeight": "bold"}),
+        html.Span(f"Sugerowane k = {best_k} (silhouette score = {scores[best_k]:.3f}). ", style={"color": THEME["accent"], "fontWeight": "bold"}),
         html.Div(scores_txt, style={"marginTop": "4px", "fontSize": "11px"})
     ])
 
@@ -397,7 +397,7 @@ def run_stage_02_clustering(n_clicks, method, k_count, monthly_returns_data, dai
 
             dendro_fig = go.Figure()
             if not forced:
-                dendro_fig.add_trace(go.Scatter(x=list(range(len(nn_dist))), y=nn_dist, mode='lines+markers', line=dict(color=THEME["purple"], width=2), marker=dict(size=5), name="k-distance"))
+                dendro_fig.add_trace(go.Scatter(x=list(range(len(nn_dist))), y=nn_dist, mode='lines+markers', line=dict(color=THEME["accent"], width=2), marker=dict(size=5), name="k-distance"))
                 dendro_fig.add_hline(y=eps_auto, line_dash="dash", line_color=THEME["orange"], annotation_text=f"auto eps = {eps_auto:.3f}", annotation_font_color=THEME["orange"])
                 dendro_fig.update_layout(title=dict(text="K-Distance Elbow Plot (auto-dobór eps)", font=dict(color=THEME["text_white"], size=13)))
             else:
@@ -442,9 +442,16 @@ def run_stage_02_clustering(n_clicks, method, k_count, monthly_returns_data, dai
         legend_blocks = build_cluster_legend(ticker_to_cluster, model_label)
 
         reordered_matrix = display_matrix.loc[ordered_tickers, ordered_tickers]
+        # Skala diverging (-1..1, korelacje) vs sequential (0..1, dystans/DBSCAN) --
+        # patrz ui/theme.py: MATRIX_COLORSCALE zaklada neutralne 0 w POLOWIE zakresu
+        # (poprawne tylko dla -1..1), MATRIX_SEQUENTIAL_COLORSCALE zaklada neutralne 0
+        # na SAMYM POCZATKU zakresu (poprawne dla 0..max, gdzie nie ma ujemnej strony).
+        heatmap_colorscale = MATRIX_COLORSCALE if zmin < 0 else MATRIX_SEQUENTIAL_COLORSCALE
         fig_clustered_map = go.Figure(data=go.Heatmap(
             z=reordered_matrix.values, x=ordered_tickers, y=ordered_tickers, zmin=zmin, zmax=zmax,
-            colorscale=[[0.0, THEME["orange"]], [0.5, "#13131A"], [1.0, THEME["purple"]]], showscale=False, hoverongaps=False
+            colorscale=heatmap_colorscale, showscale=False, hoverongaps=False,
+            text=reordered_matrix.values, texttemplate="%{text:.2f}", textfont=dict(size=10, color=THEME["text_white"]),
+            xgap=2, ygap=2,
         ))
         fig_clustered_map.update_layout(
             template="plotly_dark", width=450, height=450, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
@@ -502,9 +509,10 @@ def render_inspector_raw_data(selected_type, raw_close, monthly_returns, daily_r
             
     return dash_table.DataTable(
         columns=columns, data=df.to_dict('records'), page_action='native', page_size=15,
-        style_header={'backgroundColor': '#0B0B0E', 'color': '#FFFFFF', 'fontWeight': 'bold', 'border': '1px solid #222230', 'fontFamily': THEME['font']},
-        style_data={'backgroundColor': THEME['bg_input'], 'color': '#FFFFFF', 'border': '1px solid #222230', 'fontFamily': THEME['font']},
-        style_cell={'padding': '10px', 'textAlign': 'center'}
+        style_header=datatable_style_header(),
+        style_data=datatable_style_data(),
+        style_cell=datatable_style_cell(),
+        style_data_conditional=[datatable_row_alt_rule()]
     )
 
 

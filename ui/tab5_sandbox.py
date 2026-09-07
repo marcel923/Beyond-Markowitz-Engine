@@ -20,17 +20,25 @@ from dash.dependencies import Input, Output, State
 
 from ui.app_instance import app
 from ui.theme import THEME
-from ui.components import build_kpi_card
+from ui.components import build_kpi_card, build_kpi_strip, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule
 from engine.risk import compute_estrada_matrix, compute_crash_overlap_matrix
 from engine.optimizer import run_optimization_with_singleton_split
 from engine.returns import compute_composite_upside_row
 from data import snapshot_store as snap
 
-@app.callback(Output("panel-stage4b-tracker-container", "style"), Input("store-stage3-final-payload", "data"), prevent_initial_call=True)
-def reveal_stage4b_tracker_panel(payload):
-    if payload:
-        return {"display": "block", "marginBottom": "35px"}
-    return {"display": "none", "marginBottom": "35px"}
+# NOTE (2026-09-07, Etap 3 follow-up): the panel this module renders into
+# (panel-stage4b-tracker-container) used to be gated behind Stage 3
+# confirmation via a `reveal_stage4b_tracker_panel` callback -- that made
+# sense when Sandbox was tab-5 in a single shared sequential tab bar with
+# Tabs 1-4. Now that Sandbox is its own independent sidebar module
+# (ui/layout.py's module-sandbox), a user can open it directly to load ANY
+# previously saved snapshot from disk without ever touching the Rebalance
+# workflow in the current session -- gating it behind "did you just confirm
+# Stage 3" would show an empty panel for exactly that intended use case.
+# The panel is now always visible by default (ui/layout.py); this callback
+# was removed rather than kept-but-unused, since a dead Output/Input wiring
+# left behind is worse than no trace of it -- the git history is the record
+# of why, not a commented-out function.
 
 
 @app.callback(
@@ -331,12 +339,12 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa,
     invvol_eq = 100.0 * (1.0 + pd.Series(stock_returns.values @ w_invvol_vec, index=stock_returns.index)).cumprod()
 
     fig_eq = go.Figure()
-    fig_eq.add_trace(go.Scatter(x=orig_eq.index, y=orig_eq.values, mode='lines', name="Original Portfolio (zapisany)", line=dict(color=THEME["purple"], width=3)))
+    fig_eq.add_trace(go.Scatter(x=orig_eq.index, y=orig_eq.values, mode='lines', name="Original Portfolio (zapisany)", line=dict(color=THEME["accent"], width=3)))
     fig_eq.add_trace(go.Scatter(x=sb_eq.index, y=sb_eq.values, mode='lines', name="Manual Sandbox (suwaki)", line=dict(color=THEME["orange"], width=2.5, dash='dash')))
     if "1N" in (benchmarks or []):
-        fig_eq.add_trace(go.Scatter(x=eq_1n_eq.index, y=eq_1n_eq.values, mode='lines', name="Equal Weight (1/N)", line=dict(color="#00E5FF", width=2)))
+        fig_eq.add_trace(go.Scatter(x=eq_1n_eq.index, y=eq_1n_eq.values, mode='lines', name="Equal Weight (1/N)", line=dict(color="#4A90A4", width=2)))
     if "INV_VOL" in (benchmarks or []):
-        fig_eq.add_trace(go.Scatter(x=invvol_eq.index, y=invvol_eq.values, mode='lines', name="Equal Risk (Inv-Vol)", line=dict(color="#00E5A0", width=2)))
+        fig_eq.add_trace(go.Scatter(x=invvol_eq.index, y=invvol_eq.values, mode='lines', name="Equal Risk (Inv-Vol)", line=dict(color=THEME["pos"], width=2)))
     if "SPY" in (benchmarks or []) and "SPY" in prices.columns:
         spy_s = prices["SPY"].dropna()
         spy_eq = 100.0 * (1.0 + spy_s.pct_change().fillna(0.0)).cumprod()
@@ -354,7 +362,7 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa,
 
     asset_perf = (stock_prices.iloc[-1] / stock_prices.iloc[0] - 1.0) * 100.0
     asset_perf = asset_perf.sort_values(ascending=False)
-    colors_bar = ["#00E5A0" if v >= 0 else THEME["orange"] for v in asset_perf.values]
+    colors_bar = [THEME["pos"] if v >= 0 else THEME["neg"] for v in asset_perf.values]
     fig_bar = go.Figure(go.Bar(x=asset_perf.index, y=asset_perf.values, marker_color=colors_bar))
     fig_bar.update_layout(
         template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
@@ -365,7 +373,7 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa,
     orig_dd = (orig_eq - orig_eq.cummax()) / orig_eq.cummax() * 100.0
     sb_dd = (sb_eq - sb_eq.cummax()) / sb_eq.cummax() * 100.0
     fig_dd = go.Figure()
-    fig_dd.add_trace(go.Scatter(x=orig_dd.index, y=orig_dd.values, mode='lines', name="Original DD", line=dict(color=THEME["purple"], width=1.5)))
+    fig_dd.add_trace(go.Scatter(x=orig_dd.index, y=orig_dd.values, mode='lines', name="Original DD", line=dict(color=THEME["accent"], width=1.5)))
     fig_dd.add_trace(go.Scatter(x=sb_dd.index, y=sb_dd.values, mode='lines', name="Sandbox DD", line=dict(color=THEME["orange"], width=1.5)))
     fig_dd.update_layout(
         template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
@@ -408,18 +416,19 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa,
             {"name": "Contribution to Return", "id": "Contribution", "type": "numeric", "format": {"specifier": "+.2f"}},
         ],
         data=tbl_rows, page_size=15, sort_action='native',
-        style_header={'backgroundColor': '#0B0B0E', 'color': THEME['text_white'], 'fontWeight': 'bold', 'border': '1px solid #222230', 'fontSize': '11px', 'padding': '10px'},
-        style_data={'backgroundColor': '#161B22', 'color': THEME['text_white'], 'border': '1px solid #30363D', 'fontSize': '12px'},
-        style_cell={'padding': '9px', 'textAlign': 'center'},
-        style_cell_conditional=[{'if': {'column_id': 'Ticker'}, 'fontWeight': 'bold', 'textAlign': 'left', 'color': THEME['purple']}],
+        style_header=datatable_style_header(),
+        style_data=datatable_style_data(),
+        style_cell=datatable_style_cell(),
+        style_cell_conditional=[{'if': {'column_id': 'Ticker'}, 'fontWeight': 'bold', 'textAlign': 'left', 'color': THEME['accent']}],
         style_data_conditional=[
-            {'if': {'filter_query': '{Cluster} contains "★"', 'column_id': 'Cluster'}, 'color': THEME['orange'], 'fontWeight': 'bold'},
-            {'if': {'filter_query': '{Delta} > 0', 'column_id': 'Delta'}, 'color': '#00E5A0'},
-            {'if': {'filter_query': '{Delta} < 0', 'column_id': 'Delta'}, 'color': THEME['orange']},
-            {'if': {'filter_query': '{Return} > 0', 'column_id': 'Return'}, 'color': '#00E5A0'},
-            {'if': {'filter_query': '{Return} < 0', 'column_id': 'Return'}, 'color': THEME['orange']},
-            {'if': {'filter_query': '{Contribution} > 0', 'column_id': 'Contribution'}, 'color': '#00E5A0'},
-            {'if': {'filter_query': '{Contribution} < 0', 'column_id': 'Contribution'}, 'color': THEME['orange']},
+            datatable_row_alt_rule(),
+            {'if': {'filter_query': '{Cluster} contains "★"', 'column_id': 'Cluster'}, 'color': THEME['warn'], 'fontWeight': 'bold'},
+            {'if': {'filter_query': '{Delta} > 0', 'column_id': 'Delta'}, 'color': THEME['pos']},
+            {'if': {'filter_query': '{Delta} < 0', 'column_id': 'Delta'}, 'color': THEME['neg']},
+            {'if': {'filter_query': '{Return} > 0', 'column_id': 'Return'}, 'color': THEME['pos']},
+            {'if': {'filter_query': '{Return} < 0', 'column_id': 'Return'}, 'color': THEME['neg']},
+            {'if': {'filter_query': '{Contribution} > 0', 'column_id': 'Contribution'}, 'color': THEME['pos']},
+            {'if': {'filter_query': '{Contribution} < 0', 'column_id': 'Contribution'}, 'color': THEME['neg']},
             {'if': {'filter_query': '{Sandbox} = 0', 'column_id': 'Sandbox'}, 'color': THEME['text_dim']},
         ]
     )
@@ -441,13 +450,13 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa,
             spy_tot_ret = (spy_s.iloc[-1] / spy_s.iloc[0] - 1.0) * 100.0
             alpha_vs_spy_str = f"{(tot_orig_ret - spy_tot_ret):+.2f}%"
 
-    kpi_cards = [
-        build_kpi_card("PORTFOLIO RETURN", f"{tot_orig_ret:+.2f}%", sub_str=f"Since {created_at}", color="#00E5A0" if tot_orig_ret >= 0 else THEME["orange"]),
-        build_kpi_card("ANNUALIZED VOLATILITY", f"{orig_vol_ann:.2f}%", sub_str="Original portfolio"),
-        build_kpi_card("MAX DRAWDOWN", f"{orig_dd.min():.2f}%", sub_str="Peak-to-trough", color=THEME["orange"]),
-        build_kpi_card("ALPHA vs 1/N", f"{alpha_vs_1n:+.2f}%", sub_str="Pure weighting edge", color=THEME["purple"] if alpha_vs_1n >= 0 else THEME["orange"]),
-        build_kpi_card("ALPHA vs SPY", alpha_vs_spy_str, sub_str="Same holding period"),
-    ]
+    kpi_cards = build_kpi_strip([
+        {"label": "PORTFOLIO RETURN", "value": f"{tot_orig_ret:+.2f}%", "sub": f"Since {created_at}", "color": THEME["pos"] if tot_orig_ret >= 0 else THEME["neg"]},
+        {"label": "ANNUALIZED VOLATILITY", "value": f"{orig_vol_ann:.2f}%", "sub": "Original portfolio"},
+        {"label": "MAX DRAWDOWN", "value": f"{orig_dd.min():.2f}%", "sub": "Peak-to-trough", "color": THEME["neg"]},
+        {"label": "ALPHA vs 1/N", "value": f"{alpha_vs_1n:+.2f}%", "sub": "Pure weighting edge", "color": THEME["accent"] if alpha_vs_1n >= 0 else THEME["neg"]},
+        {"label": "ALPHA vs SPY", "value": alpha_vs_spy_str, "sub": "Same holding period"},
+    ])
 
     # Mini KPI sandboxa -- metryki portfela POD BIEŻĄCYMI suwakami (parytet z KPI Tab 4),
     # osobne od kpi_cards powyżej (te opisują zapisany, oryginalny portfel od dnia zapisu).
@@ -456,10 +465,10 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa,
     def _fmt_num(v):
         return f"{v:.2f}" if isinstance(v, (int, float)) else "N/A"
 
-    mini_kpi = [
-        build_kpi_card("μ_P (sandbox)", _fmt_pct(sandbox_extra.get("mu_p")), sub_str="Expected return"),
-        build_kpi_card("δ_P (sandbox)", _fmt_pct(sandbox_extra.get("delta_p")), sub_str="Downside risk"),
-        build_kpi_card("TPS_P (sandbox)", _fmt_num(sandbox_extra.get("tps_p")), sub_str="Tail-Penalized Sortino", color=THEME["purple"]),
-    ]
+    mini_kpi = build_kpi_strip([
+        {"label": "μ_P (sandbox)", "value": _fmt_pct(sandbox_extra.get("mu_p")), "sub": "Expected return"},
+        {"label": "δ_P (sandbox)", "value": _fmt_pct(sandbox_extra.get("delta_p")), "sub": "Downside risk"},
+        {"label": "TPS_P (sandbox)", "value": _fmt_num(sandbox_extra.get("tps_p")), "sub": "Tail-Penalized Sortino", "color": THEME["accent"]},
+    ])
 
     return kpi_cards, html.Div(weights_children), fig_eq, fig_bar, fig_dd, meta_info, mini_kpi

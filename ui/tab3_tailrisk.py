@@ -18,7 +18,8 @@ from dash import dcc, html, dash_table
 from dash.dependencies import Input, Output, State
 
 from ui.app_instance import app
-from ui.theme import THEME
+from ui.theme import THEME, MATRIX_COLORSCALE, MATRIX_SEQUENTIAL_COLORSCALE
+from ui.components import datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule
 from engine.risk import compute_drawdown_series, compute_cdd_quantile_vec, compute_crash_overlap_matrix
 from engine.returns import compute_composite_upside_row
 
@@ -164,7 +165,9 @@ def render_crash_overlap_visuals(crash_data):
     def make_heatmap(matrix, zmax, colorbar_title):
         fig = go.Figure(data=go.Heatmap(
             z=matrix, x=tickers, y=tickers, zmin=0.0, zmax=zmax,
-            colorscale=[[0.0, "#13131A"], [0.5, THEME["orange"]], [1.0, THEME["purple"]]],
+            colorscale=MATRIX_SEQUENTIAL_COLORSCALE,
+            text=matrix, texttemplate="%{text:.2f}", textfont=dict(size=10, color=THEME["text_white"]),
+            xgap=2, ygap=2,
             hoverongaps=False, colorbar=dict(title=colorbar_title, tickfont=dict(color=THEME["text_dim"]))
         ))
         fig.update_layout(
@@ -190,9 +193,10 @@ def render_crash_overlap_visuals(crash_data):
     table = dash_table.DataTable(
         data=ranking_df.to_dict('records'),
         columns=[{"name": c, "id": c} for c in ranking_df.columns],
-        style_header={"backgroundColor": THEME["bg_input"], "color": THEME["text_dim"], "fontWeight": "bold", "border": "none", "fontSize": "11px"},
-        style_cell={"backgroundColor": THEME["bg_card"], "color": THEME["text_white"], "border": f"1px solid {THEME['border']}", "padding": "10px", "fontSize": "12px"},
-        style_data_conditional=[{'if': {'column_id': 'Crash Risk Contribution'}, 'color': THEME["orange"], 'fontWeight': 'bold'}],
+        style_header=datatable_style_header(),
+        style_cell=datatable_style_cell(),
+        style_data=datatable_style_data(),
+        style_data_conditional=[datatable_row_alt_rule(), {'if': {'column_id': 'Crash Risk Contribution'}, 'color': THEME["warn"], 'fontWeight': 'bold'}],
         style_as_list_view=True
     )
 
@@ -246,14 +250,15 @@ def render_stage4a_summary_table(alpha, gamma, kappa, n_ref, tailrisk, stage3_ro
     ]
     return dash_table.DataTable(
         columns=columns, data=rows, page_size=15, sort_action='native',
-        style_header={'backgroundColor': '#0B0B0E', 'color': THEME['text_white'], 'fontWeight': 'bold', 'border': '1px solid #222230', 'padding': '10px', 'fontSize': '12px'},
-        style_data={'backgroundColor': THEME['bg_input'], 'color': THEME['text_white'], 'border': '1px solid #222230'},
-        style_cell={'padding': '10px', 'textAlign': 'center', 'fontSize': '13px'},
-        style_cell_conditional=[{'if': {'column_id': 'Ticker'}, 'fontWeight': 'bold', 'textAlign': 'left', 'color': THEME['purple']}],
+        style_header=datatable_style_header(),
+        style_data=datatable_style_data(),
+        style_cell=datatable_style_cell(),
+        style_cell_conditional=[{'if': {'column_id': 'Ticker'}, 'fontWeight': 'bold', 'textAlign': 'left', 'color': THEME['accent']}],
         style_data_conditional=[
-            {'if': {'filter_query': '{Penalty (Pi)} > 1.5', 'column_id': 'Penalty (Pi)'}, 'color': THEME['orange'], 'fontWeight': 'bold'},
-            {'if': {'filter_query': '{mu_i} > 0', 'column_id': 'mu_i'}, 'color': '#00E5A0'},
-            {'if': {'filter_query': '{mu_i} < 0', 'column_id': 'mu_i'}, 'color': THEME['orange']}
+            datatable_row_alt_rule(),
+            {'if': {'filter_query': '{Penalty (Pi)} > 1.5', 'column_id': 'Penalty (Pi)'}, 'color': THEME['warn'], 'fontWeight': 'bold'},
+            {'if': {'filter_query': '{mu_i} > 0', 'column_id': 'mu_i'}, 'color': THEME['pos']},
+            {'if': {'filter_query': '{mu_i} < 0', 'column_id': 'mu_i'}, 'color': THEME['neg']}
         ]
     )
 
@@ -274,7 +279,7 @@ def render_stage4a_underwater_chart(ticker, tailrisk):
     threshold_pct = -cdd010 * 100.0
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=dates, y=dd, mode='lines', fill='tozeroy', line=dict(color=THEME["purple"], width=1.5),
+    fig.add_trace(go.Scatter(x=dates, y=dd, mode='lines', fill='tozeroy', line=dict(color=THEME["accent"], width=1.5),
                               fillcolor="rgba(111,44,255,0.15)", name=f"{ticker} Underwater DD", hovertemplate="%{x|%Y-%m-%d}<br>%{y:.2f}%<extra></extra>"))
     fig.add_hline(y=threshold_pct, line_dash="dash", line_color=THEME["orange"], line_width=2,
                   annotation_text=f"10th Percentile Underwater Floor (CDD 0.10) = {threshold_pct:.1f}%",

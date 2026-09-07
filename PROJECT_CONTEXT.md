@@ -348,6 +348,244 @@ recheck (34/34 callbacks).
 
 ---
 
+## 5d. Visual Design System — "Institutional, Softened" (complete)
+
+Replaced the original vibrant-SaaS palette (8-color rainbow CLUSTER_PALETTE,
+purple-and-orange used interchangeably for unrelated concepts) after a
+design discussion (2026-09-07) comparing three references: a vibrant neon
+"FX Dashboard" concept (rejected — hard to execute consistently in Dash/
+Plotly, risks looking amateurish rather than premium), a Tempo-style
+consumer SaaS dashboard (rejected on a second pass — too soft/rounded,
+"looks like an iPhone app"), and Interactive Brokers' desktop terminal
+(the anchor reference — dense, grid-ruled, functional color only). Iterated
+through a too-severe "raw trading workstation" pass (all-monospace,
+zero-radius, pure black) before settling on the current middle ground.
+
+**Final direction, `ui/theme.py`:**
+- Navy-tinted charcoal (`#0B0E14`/`#10141C`), not pure black — the "granatowy"
+  (navy) admixture that reads as IBKR's actual desktop app rather than a
+  bare terminal.
+- Normal sans-serif everywhere, NOT monospace — numeric alignment achieved
+  via `fontVariantNumeric: "tabular-nums"` on values/table cells instead of
+  a typeface swap. A full-monospace first pass read as "hacker terminal",
+  not "professional fintech".
+- Small 4-6px radius on panels/inputs/badges (not 0, not the old 16px) —
+  enough softening to avoid "cut with a knife", not enough to read consumer-app.
+- ONE functional accent (`THEME["accent"]`, institutional blue `#5B9FEF`,
+  renamed from `"purple"` — keeping a key literally named "purple" while it
+  held a blue value would have been actively misleading in the ~26 call
+  sites that reference it).
+- Semantic color split: `THEME["pos"]` (green, gains) / `THEME["neg"]` (red,
+  losses) / `THEME["warn"]` (amber, warnings/attention/capped-flags) replace
+  the old overloaded pattern where a hardcoded `"#00E5A0"` neon green
+  (scattered outside THEME entirely) paired inconsistently with
+  `THEME["orange"]` for both genuine losses AND unrelated warnings/errors.
+  Of ~54 `THEME["orange"]` call sites audited, only ~9 were genuine
+  numeric-loss cases and migrated to `"neg"`; the remaining ~40 (error
+  messages, capped/promoted-singleton flags, chart threshold annotations)
+  were already semantically "attention/warning", so they need no code
+  change — `THEME["orange"]` is kept as a deprecated alias pointing at the
+  same value as `"warn"`, specifically so unmigrated call sites keep
+  rendering correctly rather than `KeyError`ing.
+- `CHART_COLORS`/`CLUSTER_PALETTE` reduced from 8 vivid hues to 6 muted ones
+  — cluster differentiation no longer competes visually with the semantic
+  pos/neg/warn colors used elsewhere.
+- `ui/components.py` gained three shared DataTable style helpers
+  (`datatable_style_header/cell/data`) and a row-striping rule
+  (`datatable_row_alt_rule`) — applied to all 7 `dash_table.DataTable`
+  definitions across `layout.py`/`tab1`/`tab3`/`tab5` (previously each had
+  independently hardcoded, inconsistent hex values). `build_kpi_card`/
+  `build_param_card` updated to the new radius/padding/tabular-nums.
+
+**A real bug found and fixed during this pass, worth remembering:** an
+early attempt converted `ui/app_instance.py`'s injected `dark_css` /
+`app.index_string` CSS blocks into f-strings interpolating `THEME` directly
+(for single-source-of-truth). This passed `py_compile` but broke at actual
+import time — `NameError: name 'background' is not defined`. Cause: literal
+CSS rule braces (`.Select-control { ... }`) collide with Python's f-string
+`{expr}` syntax; every literal brace in an f-string must be escaped as
+`{{`/`}}`, easy to miss across dozens of CSS rules, and `py_compile` only
+validates bytecode generation, not that every `{...}` resolves to a valid
+expression at *runtime* string-formatting time. Fixed by reverting to plain
+(non-f) triple-quoted strings with hardcoded hex values matching the new
+palette — sacrifices single-source-of-truth for this one file, documented
+inline so a future palette change remembers to update it manually. Lesson:
+after any f-string/`.format()` conversion of a block containing literal
+braces, actually import and inspect the runtime value — a clean
+`py_compile` is not sufficient proof of correctness for that class of bug.
+
+Verified: full app integration recheck (34/34 callbacks) after every edit
+batch, a solver regression run confirming the redesign touched zero
+business logic (identical weights to pre-redesign runs on the same inputs),
+and a runtime import check specifically for the f-string bug class above.
+
+---
+
+## 5e. Design Correction — Vivid Semantic Colors + Connected Panels (complete)
+
+Follow-up to Section 5d after real-world screenshots surfaced two problems
+with that first pass:
+
+1. **Colors read as washed out ("jak dla daltonisty").** The mistake:
+   conflating "soften the structure" (radius, spacing, typography) with
+   "soften the colors" -- these are different axes, and only the first
+   should have been muted. Corrected in `ui/theme.py`: `accent` -> vivid
+   `#2E86FF`, `pos` -> vivid `#00C853`, `neg` -> vivid `#FF3B30`, `warn` ->
+   vivid `#FFB300` (IBKR-strength saturation). Structure (radius, padding,
+   font) stays soft/institutional as before -- only the semantic colors
+   needed to punch through clearly, since that is the entire point of
+   color-coding a data terminal.
+2. **Correlation/crash-overlap heatmaps used an arbitrary amber-navy-blue
+   scale.** Replaced with a new shared `MATRIX_COLORSCALE` constant
+   (`ui/theme.py`) -- the conventional diverging red<->blue scale, using the
+   same hues as `THEME["neg"]`/`THEME["accent"]` for consistency. Applied to
+   both the Tab 1 dendrogram heatmap and the Tab 3 Jaccard/K heatmaps.
+3. **Layout still "floated"** -- Section 5d only changed style *values*
+   (radius numbers, hex codes), not the container *structure*: each stage
+   panel remained its own independently-margined, independently-cornered
+   box. Fixed two ways: (a) a mechanical pass across `ui/layout.py` reducing
+   remaining large radii (up to 24px) down to 4px and tightening
+   inter-section margins (35px -> 16px) throughout Tabs 1-3's sequential
+   workflow panels; (b) a new `ui/components.py` function,
+   `build_kpi_strip()`, which renders a list of KPIs as ONE bordered
+   instrument strip with thin internal vertical dividers -- replacing
+   `build_kpi_card()`'s per-item floating box wherever KPIs are shown in a
+   row (Tab 4's results strip, Tab 5's portfolio-return strip and
+   sandbox-metrics strip). `build_kpi_card()` itself is kept for any
+   standalone/non-strip use. The wrapping Output divs in
+   `ui/layout.py` (`stage4b-kpi-row`, `kpi-summary-row`) had their own
+   grid/gap styling removed, since `build_kpi_strip()` is now a single
+   self-contained component, not a list expecting a grid wrapper.
+
+Verified: engine-level color value checks, a monkeypatched
+`dash.callback_context` test of `build_kpi_strip()` rendering through the
+real `render_stage4b_results` callback (confirms identical solver weights
+to pre-change runs -- the redesign touched zero business logic), and a full
+app integration recheck.
+
+## 5f. Etap 3 — Sidebar Navigation (shell complete; module content pending)
+
+Replaced the flat 5-tab bar's implicit "which module am I in" with an
+explicit narrow sidebar (`ui/layout.py`), per the v2 spec's 4-module
+architecture (Overview / Research / Portfolio Rebalance / Sandbox) --
+matching the reference IBKR desktop screenshot's narrow icon column rather
+than a wide labeled nav. Deliberately NO emoji or decorative icon glyphs:
+each nav item is a plain bordered abbreviation box (`OV`/`RS`/`RB`/`SB`) +
+a small text label underneath, as an explicit placeholder "until exact
+icons are provided" (per instruction) -- swapping these for real icons
+later only touches `_sidebar_item_children()`, nothing else.
+
+**Structural change:** `app.layout`'s outer container became a flex row:
+`SIDEBAR` (70px fixed) + a content wrapper carrying the page's original
+padding/background. The former single `dcc.Tabs` (5 tabs) was split: Tabs
+1-4 stay together inside `dcc.Tabs` (now wrapped in `html.Div(id="module-
+rebalance")`, since that internal 4-step workflow -- Market Data ->
+Fundamentals -> Tail-Risk -> Strategy -- genuinely is one sequential
+process, matching the spec's "Portfolio Rebalance" module). Tab 5's content
+was extracted from `dcc.Tabs` entirely (Dash's Tabs children must all be
+`dcc.Tab` siblings sharing one `value`, so it could not stay inside while
+becoming an independent top-level module) into its own
+`html.Div(id="module-sandbox")`, matching the spec's standalone "Sandbox"
+module. `module-overview` and `module-research` are simple "under
+construction" placeholders -- their real content is out of scope for this
+pass (planned Etap 4/5 per the original roadmap) but the navigation slot
+and show/hide plumbing already exist, so building them out later is additive.
+
+New `switch_active_module` callback (`ui/layout.py`) toggles which module
+`Div` is visible (`display: block/none`) and which nav item is highlighted,
+using `dash.callback_context` to determine which of the 4 `navitem-*`
+components was clicked -- the same pattern already used by
+`toggle_inspector_sidebar` (`ui/tab1_market_data.py`), kept consistent
+rather than introducing a different navigation mechanism. Explicit Outputs
+(13 of them: 1 store + 4 module styles + 4 navitem styles + 4 navitem
+children) rather than a `STAGE4A_PARAMS_CONFIG`-style loop -- reasonable at
+4 items mixing two different property types per item.
+
+Default module on load: **Rebalance**, not Overview -- Overview is a
+placeholder with no real content yet, so defaulting to it would show an
+empty screen; Rebalance is where all the actually-functional Stage 1-4 flow
+already lives. Revisit this default once Overview is built out (Etap 4/5).
+
+Verified: `switch_active_module` tested by monkeypatching
+`dash.callback_context.triggered` (a real Dash request context isn't
+available outside a running server) for all 4 nav items plus the
+no-trigger edge case (e.g. page load) -- each correctly shows exactly one
+module, hides the other three, and highlights only the clicked nav item.
+Component-tree check confirms exactly 4 `dcc.Tab` children remain (not 5 --
+Tab 5 successfully extracted) and all new ids
+(`navitem-*`/`module-*`/`store-active-module`) are present in the actual
+rendered layout. Full app integration recheck: 35/35 callbacks (34 prior +
+this one), solver regression unchanged.
+
+---
+
+## 5g. Design Correction #2 — Chart Palette, Matrix Legibility, Sandbox Gating (complete)
+
+Follow-up after real screenshots surfaced four more problems left by Section
+5e/5f's first pass:
+
+1. **Multi-ticker overlay chart colors indistinguishable.** `CHART_COLORS`
+   had only 6 muted hues (tuned for filling cluster/dendrogram cells, where
+   subtlety across a handful of categories is fine); with 8+ tickers
+   overlaid on one line chart, colors both repeated (cycling past 6) AND
+   several of the 6 were too close in hue to tell apart at a glance (two
+   ambers, two blue-teals). Expanded to 10 genuinely distinct vivid hues;
+   `CLUSTER_PALETTE` now reuses the first 6 of these rather than
+   maintaining a second, independently-tuned palette that could drift.
+2. **Matrix colors: wrong direction, no value labels, harsh saturation, no
+   cell borders, no separation between side-by-side matrices.** Multiple
+   fixes:
+   - `generate_tws_matrix_styles()` (Tab 1 correlation table) blended
+     negative correlations toward `THEME["warn"]` (amber) instead of red --
+     fixed to `THEME["neg"]`, per the standard -1=red/0=neutral/+1=blue
+     convention. Blend intensity capped at 55% of full saturation (`MAX_BLEND`)
+     so cells never reach raw neon red/blue even at |val|=1.
+   - Both Plotly `go.Heatmap` calls (Tab 1 clustered heatmap, Tab 3 J/K
+     crash-overlap) previously showed NO per-cell numeric value at all --
+     the single biggest legibility problem, not really a color issue. Added
+     `text=..., texttemplate="%{text:.2f}"` to both, matching the
+     Excel-conditional-formatting look the request referenced.
+   - Added `xgap=2, ygap=2` to both heatmaps for visible cell borders/grid
+     lines (previously cells ran together with no separation).
+   - New `ui/theme.py` split: `MATRIX_COLORSCALE` (gentle diverging,
+     endpoints blended ~45% toward the dark background rather than hitting
+     full-strength `THEME["neg"]`/`THEME["accent"]` -- "gentle like Excel"
+     on a dark theme means bringing colors closer to the dark background,
+     not lighter/whiter, which would fight the theme) for genuine -1..+1
+     correlation data, and a new `MATRIX_SEQUENTIAL_COLORSCALE` (neutral
+     background -> gentle blue only, no red pole) for non-negative 0..max
+     data like the J/K crash-overlap matrices, which have no meaningful
+     "negative" direction. Tab 1's heatmap now picks diverging vs
+     sequential based on its own `zmin` (< 0 -> diverging, else sequential)
+     since that function already computes both cases depending on
+     clustering method.
+   - Added a visible bordered panel around each of the J and K heatmaps
+     (`ui/layout.py`) so it's unambiguous which matrix is which when shown
+     side by side -- previously only a content gap separated them, easy to
+     misread which heatmap belongs to which title at a glance.
+3. **Sandbox panel invisible unless Stage 3 was just confirmed.**
+   `panel-stage4b-tracker-container` was gated by a `reveal_stage4b_tracker_panel`
+   callback (`Input("store-stage3-final-payload", "data")`) inherited from
+   when Sandbox was tab-5 sharing sequential navigation with Tabs 1-4. Since
+   Etap 3 made Sandbox its own independent sidebar module -- explicitly
+   meant to load any saved snapshot from disk without touching the
+   Rebalance workflow first -- that gate now hid the panel for exactly the
+   use case it exists for. Callback removed entirely (not commented out --
+   a dead Output/Input wiring left behind is worse than no trace); the
+   panel is now always visible by default in `ui/layout.py`.
+
+Verified: engine-level palette/color-value checks (10 distinct
+`CHART_COLORS`, negative-correlation blend confirmed red-toned via RGB
+component comparison), a real `render_crash_overlap_visuals` call
+confirming `texttemplate`/`xgap`/`ygap` are actually set on the returned
+Plotly figure objects (not just present in source), a layout tree check
+confirming the Sandbox panel's default style no longer contains
+`display: none`, a full app integration recheck (34/34 callbacks -- 35
+minus the one intentionally removed), and a solver regression rerun
+(identical weights to every prior check in this project's history).
+
+---
+
 ## 6. Implementation Status & Development Roadmap
 
 ### Currently Implemented in Codebase:
