@@ -69,6 +69,51 @@ def fetch_universe_prices(tickers: List[str], period: str = "5y") -> Tuple[pd.Da
     return prices, valid_tickers
 
 
+def fetch_company_profile(ticker: str) -> Dict[str, str]:
+    """
+    Best-effort fetch of a company's display name and sector via yfinance's
+    `Ticker(ticker).info` -- used by the Research module (Etap 4) to
+    auto-fill Name/Sector when a brand-new ticker is added to the universe,
+    so the user only has to type the ticker itself, not look up its own
+    name and sector by hand.
+
+    Unlike `fetch_current_prices`/`fetch_price_history` above, `.info` is a
+    single-ticker call (yfinance has no batched equivalent for company
+    profile fields), and it is a genuinely different, heavier endpoint than
+    the price-history downloads elsewhere in this module -- slower, and
+    more prone to returning a sparse/empty dict for thinly-covered or
+    non-US tickers (the project's universe already mixes NYSE/NASDAQ with
+    KRX/ASX/LSE names elsewhere, and profile coverage for those is less
+    reliable than daily price history). Missing fields degrade to "" rather
+    than raising, exactly like every other function in this module -- a
+    caller should never crash because Yahoo didn't have a sector for a
+    given ticker.
+
+    Returns
+    -------
+    dict with keys "name" and "sector" (each "" if unavailable). Never
+    raises; returns {"name": "", "sector": ""} on any failure (bad ticker,
+    no network, rate limit, malformed response).
+    """
+    import yfinance as yf
+
+    empty = {"name": "", "sector": ""}
+    if not ticker or not ticker.strip():
+        return empty
+
+    try:
+        info = yf.Ticker(ticker.strip()).info
+    except Exception:
+        return empty
+
+    if not isinstance(info, dict):
+        return empty
+
+    name = info.get("longName") or info.get("shortName") or ""
+    sector = info.get("sector") or ""
+    return {"name": name, "sector": sector}
+
+
 def fetch_current_prices(tickers: List[str]) -> Dict[str, float]:
     """
     Single batched yfinance call for a list of tickers -> {ticker: last_close_price}.

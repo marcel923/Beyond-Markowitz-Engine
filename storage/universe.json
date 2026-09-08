@@ -1,0 +1,23 @@
+[
+  {
+    "Ticker": "MRVL",
+    "Name": "Marvell Technology, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-07"
+  },
+  {
+    "Ticker": "MSFT",
+    "Name": "Microsoft Corporation",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-07"
+  },
+  {
+    "Ticker": "NVDA",
+    "Name": "NVIDIA Corporation",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-08"
+  }
+]

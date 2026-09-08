@@ -1,0 +1,525 @@
+{
+  "entries": [
+    {
+      "Date": "2021-11-10",
+      "P0": 29.362634658813477,
+      "Target_Consensus": 25.9,
+      "Target_High": 40.0,
+      "Target_Low": 13.0,
+      "N_analysts": 39,
+      "EPS_CAGR": 31.86,
+      "EPS_Rev_90d": 0.27
+    },
+    {
+      "Date": "2021-12-09",
+      "P0": 30.393983840942383,
+      "Target_Consensus": 34.09,
+      "Target_High": 40.0,
+      "Target_Low": 20.0,
+      "N_analysts": 38,
+      "EPS_CAGR": 27.65,
+      "EPS_Rev_90d": 4.4
+    },
+    {
+      "Date": "2022-01-11",
+      "P0": 27.72939682006836,
+      "Target_Consensus": 34.19,
+      "Target_High": 40.0,
+      "Target_Low": 20.0,
+      "N_analysts": 39,
+      "EPS_CAGR": 37.57,
+      "EPS_Rev_90d": 4.17
+    },
+    {
+      "Date": "2022-02-09",
+      "P0": 26.62089729309082,
+      "Target_Consensus": 34.52,
+      "Target_High": 40.0,
+      "Target_Low": 20.0,
+      "N_analysts": 39,
+      "EPS_CAGR": 37.58,
+      "EPS_Rev_90d": 3.92
+    },
+    {
+      "Date": "2022-03-15",
+      "P0": 22.904558181762695,
+      "Target_Consensus": 34.17,
+      "Target_High": 40.0,
+      "Target_Low": 21.0,
+      "N_analysts": 42,
+      "EPS_CAGR": 21.25,
+      "EPS_Rev_90d": 29.76
+    },
+    {
+      "Date": "2022-04-18",
+      "P0": 21.71809959411621,
+      "Target_Consensus": 33.14,
+      "Target_High": 40.0,
+      "Target_Low": 16.0,
+      "N_analysts": 39,
+      "EPS_CAGR": 20.2,
+      "EPS_Rev_90d": 30.48
+    },
+    {
+      "Date": "2022-05-16",
+      "P0": 17.21256446838379,
+      "Target_Consensus": 32.18,
+      "Target_High": 40.0,
+      "Target_Low": 16.0,
+      "N_analysts": 41,
+      "EPS_CAGR": 20.03,
+      "EPS_Rev_90d": 30.39
+    },
+    {
+      "Date": "2022-06-17",
+      "P0": 15.836034774780273,
+      "Target_Consensus": 25.68,
+      "Target_High": 43.38,
+      "Target_Low": 13.0,
+      "N_analysts": 41,
+      "EPS_CAGR": 19.43,
+      "EPS_Rev_90d": -2.79
+    },
+    {
+      "Date": "2022-07-18",
+      "P0": 16.056421279907227,
+      "Target_Consensus": 24.0,
+      "Target_High": 40.0,
+      "Target_Low": 13.0,
+      "N_analysts": 39,
+      "EPS_CAGR": 17.88,
+      "EPS_Rev_90d": -4.98
+    },
+    {
+      "Date": "2022-08-15",
+      "P0": 18.97930335998535,
+      "Target_Consensus": 22.64,
+      "Target_High": 37.0,
+      "Target_Low": 13.0,
+      "N_analysts": 39,
+      "EPS_CAGR": 14.94,
+      "EPS_Rev_90d": -23.42
+    },
+    {
+      "Date": "2022-09-13",
+      "P0": 13.098535537719727,
+      "Target_Consensus": 20.28,
+      "Target_High": 32.5,
+      "Target_Low": 11.0,
+      "N_analysts": 39,
+      "EPS_CAGR": 11.33,
+      "EPS_Rev_90d": -38.25
+    },
+    {
+      "Date": "2022-10-17",
+      "P0": 11.858611106872559,
+      "Target_Consensus": 19.43,
+      "Target_High": 32.5,
+      "Target_Low": 11.0,
+      "N_analysts": 40,
+      "EPS_CAGR": 10.12,
+      "EPS_Rev_90d": -37.28
+    },
+    {
+      "Date": "2022-11-17",
+      "P0": 15.638243675231934,
+      "Target_Consensus": 19.13,
+      "Target_High": 32.0,
+      "Target_Low": 11.0,
+      "N_analysts": 40,
+      "EPS_CAGR": 12.05,
+      "EPS_Rev_90d": -23.24
+    },
+    {
+      "Date": "2022-12-14",
+      "P0": 17.634817123413086,
+      "Target_Consensus": 19.47,
+      "Target_High": 32.5,
+      "Target_Low": 11.0,
+      "N_analysts": 40,
+      "EPS_CAGR": 12.73,
+      "EPS_Rev_90d": -4.45
+    },
+    {
+      "Date": "2023-01-10",
+      "P0": 15.873730659484863,
+      "Target_Consensus": 19.79,
+      "Target_High": 32.5,
+      "Target_Low": 11.0,
+      "N_analysts": 38,
+      "EPS_CAGR": 12.36,
+      "EPS_Rev_90d": -2.68
+    },
+    {
+      "Date": "2023-02-16",
+      "P0": 21.953224182128906,
+      "Target_Consensus": 20.7,
+      "Target_High": 32.5,
+      "Target_Low": 11.0,
+      "N_analysts": 38,
+      "EPS_CAGR": 11.41,
+      "EPS_Rev_90d": -0.12
+    },
+    {
+      "Date": "2023-03-17",
+      "P0": 25.67232894897461,
+      "Target_Consensus": 25.94,
+      "Target_High": 35.0,
+      "Target_Low": 11.0,
+      "N_analysts": 39,
+      "EPS_CAGR": 31.94,
+      "EPS_Rev_90d": 36.27
+    },
+    {
+      "Date": "2023-04-13",
+      "P0": 26.4088134765625,
+      "Target_Consensus": 28.19,
+      "Target_High": 35.5,
+      "Target_Low": 17.5,
+      "N_analysts": 40,
+      "EPS_CAGR": 33.14,
+      "EPS_Rev_90d": 38.25
+    },
+    {
+      "Date": "2023-05-19",
+      "P0": 31.199983596801758,
+      "Target_Consensus": 29.67,
+      "Target_High": 46.0,
+      "Target_Low": 17.5,
+      "N_analysts": 41,
+      "EPS_CAGR": 33.96,
+      "EPS_Rev_90d": 41.25
+    },
+    {
+      "Date": "2023-06-15",
+      "P0": 42.57007598876953,
+      "Target_Consensus": 45.06,
+      "Target_High": 60.0,
+      "Target_Low": 17.5,
+      "N_analysts": 43,
+      "EPS_CAGR": 60.92,
+      "EPS_Rev_90d": 69.29
+    },
+    {
+      "Date": "2023-07-18",
+      "P0": 47.40165328979492,
+      "Target_Consensus": 48.64,
+      "Target_High": 76.7,
+      "Target_Low": 34.0,
+      "N_analysts": 43,
+      "EPS_CAGR": 66.64,
+      "EPS_Rev_90d": 75.56
+    },
+    {
+      "Date": "2023-08-17",
+      "P0": 43.25972366333008,
+      "Target_Consensus": 52.25,
+      "Target_High": 80.0,
+      "Target_Low": 39.24,
+      "N_analysts": 41,
+      "EPS_CAGR": 73.71,
+      "EPS_Rev_90d": 78.08
+    },
+    {
+      "Date": "2023-09-13",
+      "P0": 45.40030288696289,
+      "Target_Consensus": 64.67,
+      "Target_High": 110.0,
+      "Target_Low": 53.5,
+      "N_analysts": 43,
+      "EPS_CAGR": 97.45,
+      "EPS_Rev_90d": 41.37
+    },
+    {
+      "Date": "2023-10-13",
+      "P0": 45.376346588134766,
+      "Target_Consensus": 65.34,
+      "Target_High": 110.0,
+      "Target_Low": 53.5,
+      "N_analysts": 44,
+      "EPS_CAGR": 99.59,
+      "EPS_Rev_90d": 37.13
+    },
+    {
+      "Date": "2023-11-16",
+      "P0": 49.38786697387695,
+      "Target_Consensus": 65.56,
+      "Target_High": 110.0,
+      "Target_Low": 53.5,
+      "N_analysts": 45,
+      "EPS_CAGR": 102.34,
+      "EPS_Rev_90d": 31.77
+    },
+    {
+      "Date": "2023-12-17",
+      "P0": 48.803253173828125,
+      "Target_Consensus": 66.74,
+      "Target_High": 110.0,
+      "Target_Low": 53.5,
+      "N_analysts": 45,
+      "EPS_CAGR": 118.04,
+      "EPS_Rev_90d": 14.78
+    },
+    {
+      "Date": "2024-01-15",
+      "P0": 54.6129264831543,
+      "Target_Consensus": 66.6,
+      "Target_High": 110.0,
+      "Target_Low": 41.0,
+      "N_analysts": 46,
+      "EPS_CAGR": 117.58,
+      "EPS_Rev_90d": 13.66
+    },
+    {
+      "Date": "2024-02-16",
+      "P0": 72.48416137695312,
+      "Target_Consensus": 75.19,
+      "Target_High": 120.0,
+      "Target_Low": 41.0,
+      "N_analysts": 47,
+      "EPS_CAGR": 122.39,
+      "EPS_Rev_90d": 1.89
+    },
+    {
+      "Date": "2024-03-15",
+      "P0": 87.68525695800781,
+      "Target_Consensus": 92.23,
+      "Target_High": 140.0,
+      "Target_Low": 62.0,
+      "N_analysts": 50,
+      "EPS_CAGR": 40.51,
+      "EPS_Rev_90d": 104.7
+    },
+    {
+      "Date": "2024-04-26",
+      "P0": 87.58344268798828,
+      "Target_Consensus": 100.6,
+      "Target_High": 140.0,
+      "Target_Low": 62.0,
+      "N_analysts": 49,
+      "EPS_CAGR": 41.63,
+      "EPS_Rev_90d": 100.23
+    },
+    {
+      "Date": "2024-05-14",
+      "P0": 91.19818115234375,
+      "Target_Consensus": 102.86,
+      "Target_High": 140.0,
+      "Target_Low": 62.0,
+      "N_analysts": 50,
+      "EPS_CAGR": 44.3,
+      "EPS_Rev_90d": 0.0
+    },
+    {
+      "Date": "2024-07-23",
+      "P0": 122.3882827758789,
+      "Target_Consensus": 139.21,
+      "Target_High": 200.0,
+      "Target_Low": 90.0,
+      "N_analysts": 51,
+      "EPS_CAGR": 53.57,
+      "EPS_Rev_90d": 0.62
+    },
+    {
+      "Date": "2024-08-21",
+      "P0": 128.28854370117188,
+      "Target_Consensus": 142.18,
+      "Target_High": 200.0,
+      "Target_Low": 90.0,
+      "N_analysts": 51,
+      "EPS_CAGR": 55.62,
+      "EPS_Rev_90d": 0.75
+    },
+    {
+      "Date": "2024-09-21",
+      "P0": 115.81903076171875,
+      "Target_Consensus": 149.52,
+      "Target_High": 200.0,
+      "Target_Low": 90.0,
+      "N_analysts": 51,
+      "EPS_CAGR": 60.34,
+      "EPS_Rev_90d": 4.53
+    },
+    {
+      "Date": "2024-10-07",
+      "P0": 127.52074432373047,
+      "Target_Consensus": 149.57,
+      "Target_High": 202.79,
+      "Target_Low": 90.0,
+      "N_analysts": 54,
+      "EPS_CAGR": 60.52,
+      "EPS_Rev_90d": 5.14
+    },
+    {
+      "Date": "2024-11-24",
+      "P0": 141.7285614013672,
+      "Target_Consensus": 154.44,
+      "Target_High": 202.79,
+      "Target_Low": 90.0,
+      "N_analysts": 54,
+      "EPS_CAGR": 61.61,
+      "EPS_Rev_90d": 0.95
+    },
+    {
+      "Date": "2024-12-13",
+      "P0": 134.04978942871094,
+      "Target_Consensus": 174.27,
+      "Target_High": 220.0,
+      "Target_Low": 101.91,
+      "N_analysts": 52,
+      "EPS_CAGR": 66.71,
+      "EPS_Rev_90d": 3.86
+    },
+    {
+      "Date": "2025-01-23",
+      "P0": 147.00045776367188,
+      "Target_Consensus": 175.74,
+      "Target_High": 220.0,
+      "Target_Low": 135.0,
+      "N_analysts": 53,
+      "EPS_CAGR": 66.89,
+      "EPS_Rev_90d": 3.43
+    },
+    {
+      "Date": "2025-02-15",
+      "P0": 138.64292907714844,
+      "Target_Consensus": 175.39,
+      "Target_High": 220.0,
+      "Target_Low": 135.0,
+      "N_analysts": 54,
+      "EPS_CAGR": 66.76,
+      "EPS_Rev_90d": 0.02
+    },
+    {
+      "Date": "2025-03-25",
+      "P0": 120.52110290527344,
+      "Target_Consensus": 175.11,
+      "Target_High": 234.92,
+      "Target_Low": 130.0,
+      "N_analysts": 53,
+      "EPS_CAGR": 30.53,
+      "EPS_Rev_90d": 53.88
+    },
+    {
+      "Date": "2025-04-22",
+      "P0": 98.75160217285156,
+      "Target_Consensus": 163.71,
+      "Target_High": 235.92,
+      "Target_Low": 100.0,
+      "N_analysts": 55,
+      "EPS_CAGR": 30.2,
+      "EPS_Rev_90d": 50.81
+    },
+    {
+      "Date": "2025-05-21",
+      "P0": 131.6155548095703,
+      "Target_Consensus": 161.82,
+      "Target_High": 235.93,
+      "Target_Low": 100.0,
+      "N_analysts": 56,
+      "EPS_CAGR": 30.06,
+      "EPS_Rev_90d": -3.48
+    },
+    {
+      "Date": "2025-06-13",
+      "P0": 141.78115844726562,
+      "Target_Consensus": 171.67,
+      "Target_High": 210.0,
+      "Target_Low": 100.0,
+      "N_analysts": 54,
+      "EPS_CAGR": 30.53,
+      "EPS_Rev_90d": -3.38
+    },
+    {
+      "Date": "2025-07-23",
+      "P0": 170.55284118652344,
+      "Target_Consensus": 180.13,
+      "Target_High": 250.0,
+      "Target_Low": 100.0,
+      "N_analysts": 53,
+      "EPS_CAGR": 31.58,
+      "EPS_Rev_90d": -1.38
+    },
+    {
+      "Date": "2025-08-30",
+      "P0": 173.94830322265625,
+      "Target_Consensus": 214.48,
+      "Target_High": 289.73,
+      "Target_Low": 100.0,
+      "N_analysts": 54,
+      "EPS_CAGR": 35.46,
+      "EPS_Rev_90d": 4.05
+    },
+    {
+      "Date": "2025-09-08",
+      "P0": 168.0861358642578,
+      "Target_Consensus": 215.14,
+      "Target_High": 389.73,
+      "Target_Low": 100.0,
+      "N_analysts": 56,
+      "EPS_CAGR": 35.71,
+      "EPS_Rev_90d": 3.92
+    },
+    {
+      "Date": "2025-10-10",
+      "P0": 182.92669677734375,
+      "Target_Consensus": 221.25,
+      "Target_High": 389.73,
+      "Target_Low": 100.0,
+      "N_analysts": 57,
+      "EPS_CAGR": 36.57,
+      "EPS_Rev_90d": 3.38
+    },
+    {
+      "Date": "2025-10-14",
+      "P0": 179.8006591796875,
+      "Target_Consensus": 223.52,
+      "Target_High": 389.73,
+      "Target_Low": 100.0,
+      "N_analysts": 57,
+      "EPS_CAGR": 37.28,
+      "EPS_Rev_90d": 3.37
+    },
+    {
+      "Date": "2026-01-05",
+      "P0": 187.89083862304688,
+      "Target_Consensus": 260.45,
+      "Target_High": 432.78,
+      "Target_Low": 140.0,
+      "N_analysts": 58,
+      "EPS_CAGR": 49.13,
+      "EPS_Rev_90d": 2.84
+    },
+    {
+      "Date": "2026-04-10",
+      "P0": 188.41041564941406,
+      "Target_Consensus": 269.16,
+      "Target_High": 380.0,
+      "Target_Low": 140.0,
+      "N_analysts": 58,
+      "EPS_CAGR": 40.21,
+      "EPS_Rev_90d": 76.68
+    },
+    {
+      "Date": "2026-08-08",
+      "P0": 223.9600067138672,
+      "Target_Consensus": 314.29,
+      "Target_High": 743.1,
+      "Target_Low": 180.0,
+      "N_analysts": 56,
+      "EPS_CAGR": 50.25,
+      "EPS_Rev_90d": 8.73
+    },
+    {
+      "Date": "2026-09-07",
+      "P0": 230.36000061035156,
+      "Target_Consensus": 334.98,
+      "Target_High": 710.29,
+      "Target_Low": 180.0,
+      "N_analysts": 57,
+      "EPS_CAGR": 66.14,
+      "EPS_Rev_90d": 3.62
+    }
+  ],
+  "horizon_profiles": {}
+}

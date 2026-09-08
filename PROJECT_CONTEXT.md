@@ -586,6 +586,413 @@ minus the one intentionally removed), and a solver regression rerun
 
 ---
 
+## 5h. Etap 4 — Research / Company Dossier Module (complete)
+
+Wires the Etap 1 data layer (`data/universe_store.py`, `data/company_store.py`
+-- built with no UI consumer at the time) into Module 2's sidebar slot,
+replacing its placeholder. Three-column IBKR-style layout, per the original
+v2 spec and the concept mockup agreed with the project owner
+(2026-09-07 conversation): search + company list (left) / dossier metrics +
+target-vs-price history chart (center) / fundamental-data update form (right).
+
+**Decisions confirmed before implementation:**
+- **No valuation-ratio snapshot (P/E, P/S).** Investigated: yfinance has no
+  historical time-series endpoint for these, only a live "today" `.info`
+  snapshot; a single point-in-time number with no history was judged not
+  worth adding. A forward-P/E computed from the manually-entered EPS 2Y
+  CAGR was floated (`trailing_EPS * (1+CAGR)^0.5`) but dropped for the same
+  reason -- explicitly out of scope for this pass.
+- **New tickers auto-join the universe as "Watchlist"** the first time a
+  snapshot is saved for them -- no separate "add to universe" step.
+  (`ui/module_research.py`'s `save_snapshot` calls
+  `universe_store.upsert_company()` unconditionally before
+  `company_store.append_entry()`.)
+- **Freshness threshold: 30 days fresh / 60 days stale**, matching the
+  original spec's "<30 dni" wording, with an intermediate amber band (30-60
+  days) rather than a hard binary so a company isn't flagged identically at
+  31 days old vs 300.
+- **Deliberately NOT wired into Stage 3's fundamental-inputs table.**
+  Having the Rebalance workflow auto-pull from `company_store` instead of
+  requiring manual re-entry is a real, valuable follow-up (matches the
+  original spec's "Portfolio Rebalance zasila się automatycznie... dla
+  spółek ze statusem Active_Screened") but is a distinct, larger change to
+  an existing working data flow -- explicitly deferred, not bundled here.
+
+**New file `ui/module_research.py`:**
+- `render_company_list`: reads `universe_store.list_companies()`, filters
+  by the search box, shows each as a clickable row with a freshness dot
+  (`_freshness_dot_color`) driven by `company_store.days_since_last_update()`.
+- `select_ticker`: a pattern-matching callback (`Input({"type":
+  "research-company-row", "ticker": ALL}, "n_clicks")`) determining which
+  row was clicked via `dash.callback_context`, OR the "+ ŚLEDŹ" button for
+  typing a brand-new ticker not yet in any list. Guards against Dash's
+  pattern-matching quirk where a newly-rendered row (e.g. after a search
+  filter changes the matched set) can appear as a "phantom" trigger with
+  `n_clicks=0`/`None` even though nothing was actually clicked -- checks the
+  triggered value is truthy before treating it as a real click.
+- `populate_dossier`: on ticker selection, reads `universe_store.get_company()`
+  + `company_store.get_latest()`/`get_history()`, fetches a live P0 via
+  `data.market_data.fetch_current_prices()` (single ticker), and fills the
+  metrics grid, the target-vs-price history chart (empty with a placeholder
+  annotation for a ticker with no saved history yet -- expected, not a bug,
+  since this data only starts accumulating from when it's first saved), and
+  every form field. A brand-new ticker (no `company_store` entry at all)
+  gets blank form fields rather than erroring.
+- `save_snapshot`: validates all 7 required fields are present (rejects the
+  save with a specific "uzupełnij pola: ..." message naming which ones are
+  missing, rather than silently writing partial/zero data), then calls
+  `universe_store.upsert_company()` + `company_store.append_entry()`, and
+  bumps `store-research-refresh` so the left-hand list re-renders with the
+  new/updated freshness dot immediately.
+
+`ui/layout.py`'s `module-research` placeholder replaced with the real
+3-column structure (component ids: `research-search-input`,
+`research-company-list`, `research-new-ticker-input`/`-btn`,
+`store-research-selected-ticker`, `store-research-refresh`,
+`research-dossier-header`/`-metrics`/`-chart`, `research-input-{name,
+sector,status,p0,target,thigh,tlow,nanalysts,epscagr,epsrev}`,
+`research-btn-save`, `research-save-status`). `app.py` gained one more
+import (`ui.module_research`) alongside the 5 existing tab modules.
+
+Verified: all new component ids present in the actual rendered layout
+tree; `select_ticker` tested against 4 simulated `dash.callback_context`
+scenarios (row click, new-ticker button, phantom zero-click trigger, empty
+new-ticker input) via the same monkeypatch technique used for Etap 3's
+`switch_active_module`; a full save -> read-back cycle against the real
+`data/` layer (auto-adds to universe, `company_store` entry matches what
+was submitted, list re-renders with the new company, validation correctly
+rejects a save missing a required field); `populate_dossier` tested both
+for an existing ticker with history and a brand-new one without; full app
+integration recheck (38/38 callbacks -- 34 prior + 4 new); solver
+regression rerun (identical weights to every prior check in this project's
+history, confirmed to the same floating-point precision).
+
+**Follow-up fix (same day):** two mechanic changes requested after initial review:
+1. **"+ ŚLEDŹ" now adds the ticker to `universe_store` immediately**, before
+   any fundamental data is entered -- previously a new ticker only reached
+   the universe at the point `save_snapshot` was called, meaning it
+   wouldn't appear on the left-hand list at all until the full 7-field form
+   was filled in and saved. Tracking a company and entering its
+   fundamental data are now two independent steps, as requested: the
+   ticker shows up on the list right away (with a red "brak danych"
+   freshness dot until a snapshot is actually saved for it).
+2. **Name and Sector are now auto-fetched from yfinance** (`Ticker(ticker).info`,
+   new `data/market_data.py` function `fetch_company_profile`) at the
+   moment a new ticker is added via "+ ŚLEDŹ", rather than requiring manual
+   entry. Degrades to empty strings (never raises) if yfinance has no
+   profile data for a given ticker -- expected for some of the project's
+   non-US tickers (KRX/ASX/LSE), where profile coverage is less reliable
+   than daily price history; the fields stay user-editable either way.
+
+Both `store-research-refresh` writers (`select_ticker`'s "+ ŚLEDŹ" branch
+and `save_snapshot`) now declare `allow_duplicate=True`, required by Dash
+whenever more than one callback targets the same Output.
+
+A bug was introduced and caught during this fix: an early edit to insert
+`fetch_company_profile` into `data/market_data.py` accidentally deleted the
+`def fetch_current_prices(...):` signature line immediately below it,
+leaving that function's docstring and body orphaned with no `def` --
+caught immediately by the very next `python3 -m py_compile` /
+full-app-import check (raised `ImportError: cannot import name
+'fetch_current_prices'`), not by a later manual review. Restored and
+reverified. Included here as the same category of lesson as Etap 3's
+f-string/CSS-brace bug: mechanical text edits near existing code need a
+real import/compile check immediately after, not just a visual diff read.
+
+Verified: full app integration recheck (38/38 callbacks, unchanged count --
+this was a mechanic fix, not a new callback), and a live test confirming a
+brand-new ticker appears in `universe_store` (with fetched name/sector,
+"Watchlist" status) immediately after "+ ŚLEDŹ" is clicked, while
+`company_store` correctly has no entry for it yet until a snapshot is
+separately saved.
+
+---
+
+## 5i. Etap 4 Follow-up — Single-Asset Projection & Diagnostic Engine (complete)
+
+Extends the Research module (2026-09-07, second follow-up) into a full
+per-ticker forward projection tool with a probability-cone chart and
+historical backfilling, confirmed in detail with the project owner before
+implementation.
+
+**New `engine/single_asset.py`** -- pure math, mirrors `engine/returns.py`'s
+Alpha Blend design (gamma coupled to the target-price branch only, drops
+out at alpha=1.0; A_N discounts the whole bracket regardless of alpha) but
+re-parameterized per-horizon (1M/3M/6M/1Y, each with its own default
+alpha/gamma/kappa, shared N_ref=15) and extended with **eta** -- confirmed
+design: a manual "Execution / Realization Factor", a multiplicative
+correction for a company's historical track record of delivering vs.
+missing guidance (0.80 for a chronic under-deliverer, 1.15 for a
+beat-and-raise name), neutral default 1.0, flagged for a future automatic
+realized-vs-expected comparison once enough history accumulates.
+`compute_single_asset_projection()` returns the full forward cone
+(P_proj/P_upper/P_lower via sigma_ann for the P90 side and delta_down_ann
+for the P10 side -- the same upside/downside risk asymmetry philosophy as
+the portfolio-level engine, just for one asset with no N x N matrix
+machinery needed) plus diagnostics (P_profit via `norm.cdf`, Asymmetry_Ratio).
+
+**`data/company_store.py` schema change, with full backward compatibility.**
+Storage format changed from a bare JSON list to `{"entries": [...],
+"horizon_profiles": {...}}`, to hold saved per-horizon {alpha, gamma,
+kappa, eta} tuning overrides per ticker. A file written before this change
+(bare list) is read transparently as `{"entries": <that list>,
+"horizon_profiles": {}}` -- no migration script, no one-time conversion;
+the next write naturally upgrades it. `get_horizon_profile()` returns
+`None` (not an engine-level default) when nothing is saved -- deliberately
+NOT importing `engine/single_asset.py` to supply that default itself,
+keeping the one-directional dependency rule (`data/` never imports
+`engine/`) intact; `ui/module_research.py`'s `load_horizon_sliders` is what
+bridges the two, falling back to `DEFAULT_HORIZON_PARAMS[horizon]` when the
+saved profile is `None`.
+
+**Historical backfilling.** `research-input-date` (new `dcc.DatePickerSingle`,
+max date = today) lets a snapshot be saved under ANY past date, not just
+today -- `append_entry()` already supported an explicit `entry_date` from
+Etap 1, this exposes it in the UI. P0 now follows the selected date: today
+(or later) triggers a live yfinance fetch; a past date looks up the
+nearest close AT OR BEFORE that date from the already-cached 5Y series
+(`_lookup_price_asof`) -- no extra network call, reuses the same cache the
+chart's background line uses. `entries` stays chronologically sorted by
+Date on every write (already true since Etap 1; verified again here) so a
+backfilled point lands in the correct position for the chart regardless of
+entry order, and re-saving an already-used date upserts in place (status
+message distinguishes "Zapisano nowy wpis" vs "Zaktualizowano istniejący
+wpis" so the user knows which happened).
+
+**UI additions (`ui/layout.py` + `ui/module_research.py`):** a horizon
+`dcc.RadioItems` (1M/3M/6M/1Y) above the chart; the chart itself now draws
+the 5Y price line, historical Ti/Thigh/Tlow points from saved snapshots,
+AND the live forward cone (`fill="tonexty"` between P10/P90, matching the
+approved diverging-blue accent fill) with horizontal reference lines for
+the current Target Consensus/High/Low; a `build_kpi_strip()` row below the
+chart (Standalone Return μ(h), Win Probability P(R>0), Asymmetry Ratio,
+Downside Volatility) reusing the same connected-instrument-strip component
+from Etap 3's design correction, not a new one-off; a collapsible "Model
+Tuning" panel (4 sliders + a "Zapisz profil dla tego horyzontu" button)
+that loads/saves through `company_store.get_horizon_profile`/
+`save_horizon_profile`.
+
+**Callback graph note:** `store-research-price-history` (a new `dcc.Store`
+caching the 5Y series once per ticker selection, reused by the chart's
+background line, the engine's sigma/delta_down estimation, AND the
+backfill price lookup) is populated by its own `cache_price_history`
+callback, decoupled from `populate_dossier` and `sync_p0_with_date` --
+Dash sequences the graph correctly because those two depend on the cache
+(as a `State`) or on `research-input-date` changing (which
+`populate_dossier` itself triggers by resetting the date to today on ticker
+selection), not because of manual ordering.
+
+Verified: engine-level numeric tests (gamma vanishes at alpha=1.0 exactly
+as in the portfolio-level formula, all 4 horizons resolve their own
+defaults, partial parameter overrides preserve the rest of a horizon's
+defaults, eta scales mu_h linearly, divide-by-zero guards for P0=0/short
+history, invalid horizon raises `ValueError`); `company_store` backward
+compatibility (an old bare-list file reads correctly, auto-upgrades to the
+wrapped format on next write, horizon-profile CRUD, chronological sort
+after backfilling out of order, upsert-not-duplicate on a repeated date);
+full projection-chart-and-KPI rendering with real trace/KPI-count checks
+and a no-crash check when required fields are missing; the complete
+backfill-save flow end to end (new past-dated entry, re-save of the same
+date correctly reports "updated" not "new", final history chronologically
+sorted). Full app integration recheck (44/44 callbacks -- 38 prior + 6
+net-new here) and a solver regression rerun (identical weights to every
+prior check in this project's history).
+
+---
+
+## 5j. Walk-Forward Calibration & Backfit Engine (complete)
+
+Extends the Research module (2026-09-08, third follow-up) from a static
+"projection in a vacuum" calculator into a genuine backtest/calibration
+tool: uses the fundamental snapshots already saved for a ticker
+(`data/company_store.py`'s history) to check how well the model's past
+predictions matched what actually happened once each horizon elapsed, and
+lets those predictions be automatically re-fit against that history.
+
+**`engine/single_asset.py` refactor + additions.** `_compute_mu_h()` was
+extracted as its own lean function (formula only, no cone/diagnostics) --
+`compute_single_asset_projection()` now just calls it once for display;
+the new backtest/fit functions call it many times (once per historical
+entry, and for fitting, once per entry per optimizer iteration) without
+paying for cone construction on every call. Verified byte-for-byte
+unchanged output from `compute_single_asset_projection()` before vs after
+this refactor (same mu_h/P_profit/Asymmetry_Ratio on a fixed test case).
+
+- `evaluate_historical_accuracy(history_entries, price_series, horizon, params)`
+  -- for each saved snapshot where `horizon` TRADING SESSIONS (not calendar
+  days) have already elapsed, compares the model's predicted return against
+  what actually happened. Session-based advancement
+  (`_target_date_after_sessions`) walks the asset's own real trading
+  calendar (its 5Y price series' dates) rather than naively adding calendar
+  days, which would systematically misalign around weekends/holidays.
+  Entries where the horizon hasn't elapsed yet are silently skipped, not
+  included with null placeholders.
+- `fit_single_asset_parameters(history_entries, price_series, horizon)` --
+  `scipy.optimize.minimize` (L-BFGS-B, box-bounded per confirmed
+  `FIT_BOUNDS`: alpha∈[0,1], gamma∈[0,1.5], kappa∈[0,2.0], eta∈[0.5,2.0]),
+  minimizing mean squared return-prediction error across every evaluable
+  entry. `N_ref` stays fixed (not part of theta, confirmed). Returns `None`
+  below `MIN_ENTRIES_FOR_FIT=2` evaluable entries -- fitting 4 free
+  parameters to 0-1 points is meaningless, not just imprecise.
+
+**A real, important finding surfaced during testing (not a bug): parameter
+non-identifiability at small sample sizes.** A zero-noise synthetic test
+(generate 8 historical entries + resulting "true" prices from a KNOWN
+theta, then fit) initially failed to recover the true theta (gamma off by
+0.07, kappa off by 0.5) despite the optimizer finding a near-perfect
+MSE≈7.6e-7 minimum. Investigation confirmed this is genuine model behavior,
+not an optimizer bug: several different (alpha, gamma, kappa, eta)
+combinations can produce nearly identical mu_h for a small/homogeneous set
+of inputs (the same test re-run with 30 more diverse synthetic entries
+recovered the true theta to within 0.0004 on every parameter). Practical
+consequence, surfaced directly in the UI: `fit_single_asset_parameters`
+returns `n_evaluable` and `mse` specifically so a small-sample fit can be
+flagged rather than presented with false confidence --
+`run_autofit`'s status message adds an explicit caveat whenever
+`n_evaluable <= MIN_ENTRIES_FOR_FIT + 1`.
+
+**UI: two charts + a backtest table, per the confirmed design.**
+- **Chart A** (`research-dossier-chart`, `render_main_chart_and_kpis`): 5Y
+  price line, saved historical Target Consensus/High/Low points, historical
+  model predictions plotted at their OWN evaluation date (`evaluate_historical_accuracy`'s
+  `p_pred`/`date_target` -- "what did the model think a year ago about
+  today, vs. what happened"), and the live forward cone. **Confirmed
+  correction:** the cone's P0 anchor is now ALWAYS the most recent price in
+  the cached 5Y series (`price_series.iloc[-1]`), decoupled from
+  `research-input-p0` (which follows the backfill DatePicker and could hold
+  a stale historical value) -- verified directly: the projection's t=0
+  point matches the cache's last price exactly, not whatever the form
+  currently shows. `research-input-p0` was removed from this callback's
+  Inputs entirely (no longer relevant to what it renders).
+- **Chart B** (`research-backtest-chart`, `render_backtest_chart_and_table`):
+  dual-axis bar+line -- green/red bars for per-entry return error (colored
+  by `error > 0` = model overshot = red, matching the same sign convention
+  used in the table), a Realization Ratio line on a secondary y-axis. Depends
+  only on already-saved history + the current horizon/sliders, NOT on the
+  "new entry" form fields (a backtest looks backward at saved data, not at
+  data not yet saved).
+- **Backtest Inspection Table**: the 9 columns as specified, using the same
+  shared `datatable_style_*` helpers as every other table in the app for
+  visual consistency. **A real bug found and fixed during testing:** the
+  Status column's "Dowiezione/Niedowiezione: X%" label is mathematically
+  correct but reads as nonsense when the model and reality point in
+  OPPOSITE directions (e.g. model predicted +11%, reality was -4%, giving a
+  literal "-37%" realization) -- added a distinct "Chybione (przeciwny
+  kierunek)" label for exactly that sign-flip case, verified against both a
+  same-direction case (normal percentage label) and an opposite-direction
+  case (new label) using hand-constructed scenarios.
+- **`research-btn-autofit`** ("⚡ AUTODOPASUJ PARAMETRY POD HISTORIĘ"):
+  writes the fitted values directly to all 4 sliders
+  (`allow_duplicate=True`, since the sliders are also written by
+  `load_horizon_sliders` when switching ticker/horizon), which in turn
+  retriggers both charts and the table automatically via the existing
+  slider-Input wiring -- no separate "recompute" step needed.
+- Slider ranges widened to match `FIT_BOUNDS` exactly (gamma 0-1→0-1.5, eta
+  0.5-1.5→0.5-2.0) -- a real gap caught before it caused a bug: a fitted
+  value outside the old slider range would have been silently clipped by
+  the `dcc.Slider`, misrepresenting the actual fit result.
+
+Verified: engine-level tests (trading-session advancement vs. naive
+calendar-day math, the zero-noise parameter-recovery sanity check at both 8
+and 30 synthetic entries, the `MIN_ENTRIES_FOR_FIT` guard); full
+chart/table rendering against realistic synthetic history (backtest table
+row count matches evaluable-entry count, Chart A carries both the
+shifted-historical-prediction trace and the live-anchored cone trace, Chart
+B has exactly 2 traces); the live-price-anchor fix confirmed numerically
+(cone's t=0 value equals the cache's last price to the cent); the Status
+label fix re-verified after the change; full app integration recheck
+(46/46 callbacks -- 44 prior, net +2 here); solver regression rerun
+(identical weights to every prior check in this project's history).
+
+---
+
+## 5k. Parameter Stability Measure (complete) — methodology change from the previous section
+
+The project owner asked directly: how many historical observations are
+needed for `fit_single_asset_parameters` to mean anything, and can
+stability be measured rather than guessed? This triggered a genuine
+methodology correction to Section 5j's fitting approach, not just an
+additive feature.
+
+**First attempt: bootstrap resampling — implemented, tested, and abandoned
+with the reasoning kept in `engine/single_asset.py`'s docstrings.** Wrapped
+the existing fit in `n_bootstrap=200` resamples-with-replacement, reporting
+the empirical std/CV of each parameter across replicates. Tested against
+the exact two zero-noise synthetic scenarios from Section 5j (8 points:
+known non-identifiable; 30 diverse points: known well-identified) --
+**bootstrap reported "Stabilne" for every parameter in the 8-point case**,
+completely failing to flag the known-bad fit. Root cause: resampling with
+replacement from a small, FIXED set of points only reweights the SAME
+underlying feature combinations -- it cannot reveal a degeneracy that is a
+property of insufficient feature diversity itself (as opposed to sampling
+noise), because every resample still only ever contains combinations drawn
+from that same fixed pool.
+
+**Root cause investigation surfaced a second, more important bug:** cross-checking
+with `scipy.optimize.least_squares` (Trust Region Reflective) on the SAME
+8-point case that `fit_single_asset_parameters`'s original
+`scipy.optimize.minimize(..., method="L-BFGS-B")` had gotten wrong found
+the EXACT true parameters with zero error. This means the earlier "wrong"
+fit was not (only) a fundamental model non-identifiability -- it was an
+**optimizer robustness failure**: generic scalar-objective L-BFGS-B from a
+single starting point got stuck away from the true optimum on this
+problem's loss surface, while `least_squares` (purpose-built for
+sum-of-squared-residuals problems, which this literally is) found it
+reliably.
+
+**Fix: `fit_single_asset_parameters` rewritten around `scipy.optimize.least_squares`**
+instead of `minimize` on a hand-rolled scalar MSE. This is both the
+mathematically correct tool for this exact problem class AND yields the
+Jacobian at the solution for free, enabling the classical nonlinear-least-squares
+asymptotic covariance estimate: `Cov(theta) ≈ sigma² · (JᵀJ)⁻¹`, `sigma² =
+SSE/(n_obs - 4)`. Per-parameter standard error and coefficient of variation
+(`cv = stderr / |estimate|`) are now returned alongside the point estimate,
+plus the condition number of `JᵀJ` (a high condition number flags a
+near-flat/degenerate fitting direction even before inspecting any single
+parameter). Re-verified against the same two synthetic scenarios plus a
+NEW, more realistic one with 3% Gaussian noise added to the simulated
+outcomes (the original zero-noise tests turned out to be a poor testbed for
+validating a stability measure in their own right -- at exactly zero
+residual, the asymptotic covariance formula's `sigma²` term collapses
+toward zero regardless of the true identifiability of the problem, making
+any method look artificially confident). Under realistic noise: 8 points
+correctly showed enormous stderr (e.g. kappa: 0.000 ± 6.121, completely
+unconstrained within its bounds); 30 diverse points showed visibly tighter
+(alpha/eta became "Stabilne") but still appropriately wide intervals for
+harder-to-pin-down parameters (gamma/kappa) -- exactly the graduated,
+honest signal a stability measure should give, and the fix's zero-noise
+recovery test now passes exactly (all four parameters recovered to
+<0.00001 on the original problem case).
+
+**UI:** each of the 4 tuning sliders (`ui/layout.py`) gained a small
+stability badge below it (`research-stability-{alpha,gamma,kappa,eta}`),
+populated by `run_autofit` after each fit with a plain-language tier
+(`engine.single_asset.stability_label`: "Stabilne" / "Umiarkowanie
+stabilne" / "Niestabilne" / "Bardzo niestabilne / niezidentyfikowane",
+thresholded on CV) plus the CV itself. **A real display bug found and
+fixed during testing:** an extremely under-determined fit can produce
+astronomical CV values (observed: `3.4e16`%) that are mathematically
+correct but read as a glitch, not a diagnostic -- capped the displayed
+figure at `"CV>1000%"` once `cv > 10` rather than printing the literal
+number; the qualitative label itself is unaffected. Badges are cleared
+(not left stale) by `load_horizon_sliders` whenever the ticker or horizon
+changes, since a stability verdict from a previous fit context doesn't
+apply to a new one.
+
+Verified: the corrected zero-noise recovery test (exact parameter recovery
+on the original 8-point case that had previously failed), the new
+realistic-noise stability comparison (8 vs. 30 points, both the point
+estimates and the stderr/CV behaving in the expected direction), the
+capped-CV display fix (spot-checked against both an astronomically
+unstable case and a moderately-diverse 8-point case with plausible,
+non-absurd CV values), `load_horizon_sliders`'s badge-clearing behavior,
+full app integration recheck (46/46 callbacks -- same count as Section 5j,
+since this was a rewrite of existing callbacks' outputs rather than new
+callback registrations), and a solver regression rerun (identical weights
+to every prior check in this project's history).
+
+---
+
 ## 6. Implementation Status & Development Roadmap
 
 ### Currently Implemented in Codebase:

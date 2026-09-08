@@ -14,6 +14,7 @@ Moved out of quant_terminal.py (Etap 0 architecture split, PROJECT_CONTEXT.md)
 with NO behavior change.
 """
 import dash
+from datetime import date
 from dash import dcc, html, dash_table
 from dash.dependencies import Input, Output, State
 
@@ -144,12 +145,173 @@ app.layout = html.Div(style={
     ]),
 
     html.Div(id="module-research", style={"display": "none"}, children=[
-        html.Div(style={"padding": "60px 20px", "textAlign": "center"}, children=[
-            html.Div("MODULE 2 // RESEARCH", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "10px"}),
-            html.H2("Research / Company Dossier", style={"fontSize": "22px", "fontWeight": "600", "margin": "0 0 10px 0"}),
-            html.Div("Wyszukiwarka spółek i formularz aktualizacji danych fundamentalnych -- w budowie (kolejny etap).",
-                     style={"fontSize": "13px", "color": THEME["text_dim"]}),
-        ])
+        dcc.Store(id="store-research-selected-ticker"),
+        dcc.Store(id="store-research-refresh", data=0),
+        dcc.Store(id="store-research-price-history"),
+
+        html.Div(style={"display": "flex", "border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px", "minHeight": "600px"}, children=[
+
+            # --- LEWO: wyszukiwarka + lista spolek ---
+            html.Div(style={"width": "260px", "flex": "0 0 260px", "borderRight": f"1px solid {THEME['border']}"}, children=[
+                html.Div("UNIWERSUM SPÓŁEK", style={"padding": "12px 16px", "borderBottom": f"1px solid {THEME['border']}", "backgroundColor": THEME["bg_head"], "fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600"}),
+                dcc.Input(id="research-search-input", type="text", placeholder="Szukaj tickera...", debounce=True, style={
+                    "margin": "12px", "width": "calc(100% - 24px)", "padding": "8px 10px", "backgroundColor": THEME["bg_input"],
+                    "border": f"1px solid {THEME['border']}", "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12px", "boxSizing": "border-box"
+                }),
+                html.Div(id="research-company-list", style={"maxHeight": "440px", "overflowY": "auto"}),
+                html.Div(style={"padding": "12px 16px", "borderTop": f"1px solid {THEME['border']}"}, children=[
+                    html.Div("ŚLEDŹ NOWĄ SPÓŁKĘ", style={"fontSize": "10px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "8px"}),
+                    dcc.Input(id="research-new-ticker-input", type="text", placeholder="np. AAPL", style={
+                        "width": "100%", "padding": "7px 9px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
+                        "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12px", "boxSizing": "border-box", "marginBottom": "8px"
+                    }),
+                    html.Button("+ ŚLEDŹ", id="research-new-ticker-btn", n_clicks=0, style={
+                        "width": "100%", "padding": "7px", "backgroundColor": "transparent", "color": THEME["accent"],
+                        "border": f"1px solid {THEME['accent']}", "borderRadius": "4px", "fontSize": "11px", "fontWeight": "700", "cursor": "pointer"
+                    }),
+                ]),
+            ]),
+
+            # --- SRODEK: dossier + silnik projekcji ---
+            html.Div(style={"flex": "1", "minWidth": "0", "borderRight": f"1px solid {THEME['border']}"}, children=[
+                html.Div(id="research-dossier-header", style={"padding": "12px 20px", "borderBottom": f"1px solid {THEME['border']}", "backgroundColor": THEME["bg_head"], "fontSize": "12px", "color": THEME["text_dim"], "fontWeight": "600"},
+                         children="Wybierz spółkę z listy po lewej."),
+                html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                    html.Div("BIEŻĄCE METRYKI (z ostatniego zapisanego wpisu)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                    html.Div(id="research-dossier-metrics"),
+                ]),
+
+                # --- Selektor horyzontu ---
+                html.Div(style={"padding": "14px 20px", "borderBottom": f"1px solid {THEME['border']}", "display": "flex", "alignItems": "center", "justifyContent": "space-between"}, children=[
+                    html.Div("PROJEKCJA — HORYZONT", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600"}),
+                    dcc.RadioItems(
+                        id="research-horizon-selector",
+                        options=[{"label": h, "value": h} for h in ["1M", "3M", "6M", "1Y"]],
+                        value="1Y", inline=True, inputStyle={"marginRight": "5px", "marginLeft": "14px"},
+                        labelStyle={"fontSize": "12px", "color": THEME["text_white"], "fontWeight": "600"},
+                    ),
+                ]),
+
+                # --- Wykres stozka projekcji ---
+                html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                    dcc.Graph(id="research-dossier-chart", config={"displayModeBar": False}, style={"height": "320px"}),
+                ]),
+
+                # --- KPI strip ---
+                html.Div(style={"padding": "16px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                    html.Div(id="research-kpi-strip"),
+                ]),
+
+                # --- Wykres B: Realizacja Prognoz w Czasie (Model vs Rzeczywistosc) ---
+                html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                    html.Div("REALIZACJA PROGNOZ W CZASIE (MODEL vs RZECZYWISTOŚĆ)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "10px"}),
+                    dcc.Graph(id="research-backtest-chart", config={"displayModeBar": False}, style={"height": "220px"}),
+                ]),
+
+                # --- Tabela realizacji historycznej (Backtest Inspection Table) ---
+                html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                    html.Div("TABELA REALIZACJI HISTORYCZNEJ (BACKTEST INSPECTION)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "10px"}),
+                    html.Div(id="research-backtest-table"),
+                ]),
+
+                # --- Panel strojenia modelu (zwijalny) ---
+                html.Div(style={"padding": "14px 20px"}, children=[
+                    html.Div(id="research-tuning-toggle", n_clicks=0, style={"display": "flex", "alignItems": "center", "justifyContent": "space-between", "cursor": "pointer"}, children=[
+                        html.Div("MODEL TUNING (TEN HORYZONT)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600"}),
+                        html.Div("▸ rozwiń", id="research-tuning-toggle-label", style={"fontSize": "10.5px", "color": THEME["accent"], "fontWeight": "600"}),
+                    ]),
+                    html.Div(id="research-tuning-panel", style={"display": "none", "marginTop": "14px"}, children=[
+                        html.Button("⚡ AUTODOPASUJ PARAMETRY POD HISTORIĘ", id="research-btn-autofit", n_clicks=0, style={
+                            "width": "100%", "padding": "10px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                            "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer", "marginBottom": "8px"
+                        }),
+                        html.Div(id="research-autofit-status", style={"marginBottom": "14px", "fontSize": "11px"}),
+                        html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "16px 24px"}, children=[
+                            html.Div([
+                                html.Div("ALPHA (Growth/Upside Blend)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "6px"}),
+                                dcc.Slider(id="research-slider-alpha", min=0.0, max=1.0, step=0.05, value=0.7, marks=None, tooltip={"placement": "bottom", "always_visible": True}),
+                                html.Div(id="research-stability-alpha", style={"fontSize": "10px", "marginTop": "4px"}),
+                            ]),
+                            html.Div([
+                                html.Div("GAMMA (kara za widełki)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "6px"}),
+                                dcc.Slider(id="research-slider-gamma", min=0.0, max=1.5, step=0.05, value=0.45, marks=None, tooltip={"placement": "bottom", "always_visible": True}),
+                                html.Div(id="research-stability-gamma", style={"fontSize": "10px", "marginTop": "4px"}),
+                            ]),
+                            html.Div([
+                                html.Div("KAPPA (momentum rewizji EPS)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "6px"}),
+                                dcc.Slider(id="research-slider-kappa", min=0.0, max=2.0, step=0.05, value=0.4, marks=None, tooltip={"placement": "bottom", "always_visible": True}),
+                                html.Div(id="research-stability-kappa", style={"fontSize": "10px", "marginTop": "4px"}),
+                            ]),
+                            html.Div([
+                                html.Div("ETA (Execution/Realization Factor)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "6px"}),
+                                dcc.Slider(id="research-slider-eta", min=0.5, max=2.0, step=0.05, value=1.0, marks=None, tooltip={"placement": "bottom", "always_visible": True}),
+                                html.Div(id="research-stability-eta", style={"fontSize": "10px", "marginTop": "4px"}),
+                            ]),
+                        ]),
+                        html.Button("ZAPISZ PROFIL DLA TEGO HORYZONTU", id="research-btn-save-horizon", n_clicks=0, style={
+                            "marginTop": "14px", "padding": "8px 14px", "backgroundColor": "transparent", "color": THEME["accent"],
+                            "border": f"1px solid {THEME['accent']}", "borderRadius": "4px", "fontSize": "11px", "fontWeight": "700", "cursor": "pointer"
+                        }),
+                        html.Div(id="research-horizon-save-status", style={"marginTop": "8px", "fontSize": "11px"}),
+                    ]),
+                ]),
+            ]),
+
+            # --- PRAWO: formularz aktualizacji ---
+            html.Div(style={"width": "300px", "flex": "0 0 300px", "padding": "18px 20px"}, children=[
+                html.Div("AKTUALIZACJA DANYCH", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "14px"}),
+
+                html.Div("NAZWA SPÓŁKI", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                dcc.Input(id="research-input-name", type="text", style={"width": "100%", "padding": "7px 9px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}", "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box", "marginBottom": "12px"}),
+
+                html.Div("SEKTOR", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                dcc.Input(id="research-input-sector", type="text", style={"width": "100%", "padding": "7px 9px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}", "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box", "marginBottom": "12px"}),
+
+                html.Div("STATUS", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                dcc.Dropdown(id="research-input-status", options=[{"label": "Active_Screened", "value": "Active_Screened"}, {"label": "Watchlist", "value": "Watchlist"}],
+                             value="Watchlist", clearable=False, style={"marginBottom": "12px"}),
+
+                html.Div(style={"borderTop": f"1px solid {THEME['border']}", "margin": "4px 0 12px 0"}),
+
+                html.Div("DATA WPISU (backfill historii)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                dcc.DatePickerSingle(
+                    id="research-input-date", date=date.today().isoformat(), display_format="YYYY-MM-DD",
+                    max_date_allowed=date.today().isoformat(), style={"marginBottom": "12px", "width": "100%"}
+                ),
+
+                html.Div("CURRENT PRICE (P0) — auto-uzupełniane, edytowalne", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                dcc.Input(id="research-input-p0", type="number", style={"width": "100%", "padding": "7px 9px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}", "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box", "marginBottom": "12px", "fontVariantNumeric": "tabular-nums"}),
+
+                html.Div("TARGET CONSENSUS (Ti)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                dcc.Input(id="research-input-target", type="number", style={"width": "100%", "padding": "7px 9px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}", "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box", "marginBottom": "12px", "fontVariantNumeric": "tabular-nums"}),
+
+                html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "10px", "marginBottom": "12px"}, children=[
+                    html.Div([
+                        html.Div("TARGET HIGH", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                        dcc.Input(id="research-input-thigh", type="number", style={"width": "100%", "padding": "7px 9px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}", "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box", "fontVariantNumeric": "tabular-nums"}),
+                    ]),
+                    html.Div([
+                        html.Div("TARGET LOW", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                        dcc.Input(id="research-input-tlow", type="number", style={"width": "100%", "padding": "7px 9px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}", "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box", "fontVariantNumeric": "tabular-nums"}),
+                    ]),
+                ]),
+
+                html.Div("ANALYST COVERAGE (Ni)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                dcc.Input(id="research-input-nanalysts", type="number", style={"width": "100%", "padding": "7px 9px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}", "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box", "marginBottom": "12px", "fontVariantNumeric": "tabular-nums"}),
+
+                html.Div("EPS 2Y CAGR [%]", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                dcc.Input(id="research-input-epscagr", type="number", style={"width": "100%", "padding": "7px 9px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}", "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box", "marginBottom": "12px", "fontVariantNumeric": "tabular-nums"}),
+
+                html.Div("90d EPS REVISION [%]", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                dcc.Input(id="research-input-epsrev", type="number", style={"width": "100%", "padding": "7px 9px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}", "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box", "marginBottom": "14px", "fontVariantNumeric": "tabular-nums"}),
+
+                html.Button("ZAPISZ SNAPSHOT SPÓŁKI", id="research-btn-save", n_clicks=0, style={
+                    "width": "100%", "padding": "10px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                    "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer"
+                }),
+                html.Div(id="research-save-status", style={"marginTop": "10px", "fontSize": "11px"}),
+            ]),
+        ]),
     ]),
 
     html.Div(id="module-rebalance", children=[

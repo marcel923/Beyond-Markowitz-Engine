@@ -24,6 +24,7 @@ import ui.tab2_fundamentals     # noqa: F401  (registers Stage 3 callbacks)
 import ui.tab3_tailrisk         # noqa: F401  (registers Tail-Risk + Crash-Overlap callbacks)
 import ui.tab4_rebalance        # noqa: F401  (registers Stage 4B solver callbacks)
 import ui.tab5_sandbox          # noqa: F401  (registers Sandbox / Forward Tracker callbacks)
+import ui.module_research       # noqa: F401  (registers Research / Company Dossier callbacks -- Etap 4)
 import ui.layout                # noqa: F401  (sets app.layout as an import side-effect)
 
 if __name__ == "__main__":
