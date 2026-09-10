@@ -6,4 +6,8 @@ plotly==5.24.1
 pandas>=2.2.3
 numpy>=1.26
 scipy>=1.13
+statsmodels>=0.14  # engine/pairs.py -- Engle-Granger cointegration test (statsmodels.tsa.stattools.coint),
+                    # NOT a plain adfuller() on regression residuals (see engine/pairs.py module docstring
+                    # for why that distinction matters -- plain ADF critical values understate how
+                    # extreme the test statistic needs to be for residuals from an estimated regression).
 scikit-learn>=1.9

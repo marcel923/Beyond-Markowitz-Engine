@@ -993,6 +993,111 @@ to every prior check in this project's history).
 
 ---
 
+## 5l. Cointegration Pair Screener (`engine/pairs.py`, complete — screening only, not yet wired to mu_i)
+
+Standalone Engle-Granger pair screener, rewritten from scratch after
+auditing a third-party (Gemini-authored) reference script the project
+owner had been experimenting with -- three confirmed bugs found by
+inspection, all avoided here:
+
+1. **The reference script's stated "p-value < 0.05" gate was never actually
+   applied.** Its filtering loop only checked `if 5 <= half_life <= 90:`
+   before appending a pair to the ranked table -- `adf_p` was computed and
+   displayed but never compared against any threshold. This directly
+   explained a discrepancy the project owner flagged earlier: MU vs WDC
+   (p=0.0958, nearly 2x the stated threshold) appearing in the "top 20"
+   table despite failing the very criterion the accompanying report
+   described.
+2. **No sanity check on the hedge ratio's sign or magnitude.** A negative
+   hedge ratio (observed in the reference script's own output: GRAB vs
+   MCHP, gamma=-0.608) means the two series move in OPPOSITE directions --
+   not economically a "pair" for a same-direction relative-value mechanism,
+   almost certainly a spurious regression that happened to pass every other
+   filter.
+3. **Plain `statsmodels.tsa.stattools.adfuller()` applied directly to OLS
+   regression residuals**, using ADF's standard critical values -- which
+   assume a raw observed series, not residuals from an estimated
+   2-parameter regression (which have a different, non-standard null
+   distribution). This systematically overstates evidence for
+   cointegration. Fixed by using `statsmodels.tsa.stattools.coint()`
+   instead, which applies the correct MacKinnon-adjusted critical values
+   for exactly this two-step Engle-Granger setup.
+
+**Confirmed project philosophy (important, shapes every design choice
+here):** this is explicitly NOT classical market-neutral pairs trading. The
+project is Long-Only, rebalances on the existing ~21-trading-day (monthly)
+cadence -- a qualifying pair's Z-score will eventually give a bounded,
+SOFT nudge to both names' `mu_i` (via `theta * tanh(-Z)`, agreed in the
+immediately preceding conversation turn as the safe replacement for a
+proposed-but-flawed unbounded linear `mu*(1-theta*Z)` correction that could
+flip mu's sign at extreme Z or push a genuinely negative mu further
+negative on a "cheap" reading) -- evaluated once per rebalance cycle, not
+continuously, and never with hard 80/20 weight-switching execution. A
+"wrong" pair costs at most one weaker month on one hyper-growth name, not a
+leveraged market-neutral blowup. This screener produces the CANDIDATE PAIR
+LIST only; the mu_i adjustment itself is a separate, not-yet-implemented
+step.
+
+**Four hard gates, in cheapest-first order** (`find_cointegrated_pairs`):
+1. 2Y drift gate: `|R_A(2Y) - R_B(2Y)| <= 35pp` (run before the expensive
+   cointegration test, so a pair that was always going to fail on drift
+   alone never reaches it).
+2. Engle-Granger cointegration: `p_value < 0.05` via `statsmodels.coint()`.
+3. Half-life bound: `5 <= half_life <= 63` trading sessions (from AR(1) fit
+   on the OLS residual spread) -- kept exactly as stated in the project
+   owner's original report for now; revisiting this range for the
+   monthly-cadence use case (as opposed to a report written with faster
+   arbitrage-style trading in mind) is an explicit, separate decision for
+   later, not silently changed here.
+4. Hedge ratio sanity: `0.3 <= gamma <= 3.0` (rejects near-zero, negative,
+   or wildly-scaled hedge ratios -- a spurious-regression signature).
+
+Every gate is a hard reject; a pair failing any one never reaches the
+returned table.
+
+Verified with synthetic data (four constructed scenarios, using
+statistically independent random-walk components for each -- an earlier
+draft of the test accidentally reused the same underlying trend series
+across two scenarios, producing a misleading cross-pair "false positive"
+that was a test-construction bug, not a screener bug; rebuilt with
+genuinely independent components before drawing conclusions):
+- A genuinely cointegrated pair (shared stochastic trend + AR(1)
+  mean-reverting spread) passes every gate.
+- An independent-random-walk (spurious) pair is correctly rejected at the
+  p-value gate (p=0.596).
+- An excessive-2Y-drift pair is correctly rejected before the cointegration
+  test even runs.
+- **The cleanest single proof of gate 4's necessity:** a pair constructed
+  to have a genuinely negative hedge ratio was shown to PASS the
+  cointegration test outright (p<0.05 -- a real statistical relationship
+  exists) and is rejected ONLY by the hedge-ratio sign gate -- direct
+  evidence this check catches something the p-value test alone would let
+  through, not a redundant/cosmetic filter.
+- A full `find_cointegrated_pairs` run across all four synthetic pairs
+  together, with `warnings.simplefilter("error")`, produces zero runtime
+  warnings and returns exactly the one genuinely-qualifying pair -- confirms
+  the four gates compose correctly as a pipeline, not just individually.
+- A near-zero AR(1) coefficient (rho) in the half-life calculation was
+  found, during testing, to trigger a numpy divide-by-zero `RuntimeWarning`
+  even though the existing `rho >= 0` guard should have caught it (the
+  warning fired for rho asymptotically close to but not exactly 0);
+  tightened the guard to `abs(np.log1p(rho)) < 1e-10` so the check is
+  robust to floating-point near-misses, not just exact zero.
+
+New dependency: `statsmodels>=0.14` added to `requirements.txt` --
+installed and confirmed importable in this environment; not previously a
+project dependency.
+
+**Not yet done, explicitly deferred:** wiring a qualifying pair's live
+Z-score into an actual `mu_i` adjustment (the `theta * tanh(-Z)` mechanism
+agreed in conversation, not yet implemented in code), and any UI/Dash
+surface for this screener (no `ui/` changes in this pass -- this is
+engine-layer only, run and verified standalone). Both are natural next
+steps once the project owner has reviewed real screener output against the
+project's actual ~40-ticker universe.
+
+---
+
 ## 6. Implementation Status & Development Roadmap
 
 ### Currently Implemented in Codebase:
