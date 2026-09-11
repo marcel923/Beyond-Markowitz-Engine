@@ -19,5 +19,236 @@
     "Sector": "Technology",
     "Status": "Watchlist",
     "Last_Updated": "2026-09-08"
+  },
+  {
+    "Ticker": "TSM",
+    "Name": "Taiwan Semiconductor Manufacturing Company Limited",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "AMD",
+    "Name": "Advanced Micro Devices, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "AVGO",
+    "Name": "Broadcom Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "P",
+    "Name": "Everpure, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "MU",
+    "Name": "Micron Technology, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "000660.KS",
+    "Name": "SK hynix Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "005930.KS",
+    "Name": "Samsung Electronics Co., Ltd.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "WDC",
+    "Name": "Western Digital Corporation",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "ANET",
+    "Name": "Arista Networks, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "STX",
+    "Name": "Seagate Technology Holdings plc",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "Q",
+    "Name": "Qnity Electronics, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "ALAB",
+    "Name": "Astera Labs, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "ARGX",
+    "Name": "argenx SE",
+    "Sector": "Healthcare",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "LLY",
+    "Name": "Eli Lilly and Company",
+    "Sector": "Healthcare",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "LSCC",
+    "Name": "Lattice Semiconductor Corporation",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "GRAB",
+    "Name": "Grab Holdings Limited",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "MPWR",
+    "Name": "Monolithic Power Systems, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "MCHP",
+    "Name": "Microchip Technology Incorporated",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "TSEM",
+    "Name": "Tower Semiconductor Ltd.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "AEIS",
+    "Name": "Advanced Energy Industries, Inc.",
+    "Sector": "Industrials",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "PLTR",
+    "Name": "Palantir Technologies Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "ASML",
+    "Name": "ASML Holding N.V.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "AS",
+    "Name": "Amer Sports, Inc.",
+    "Sector": "Consumer Cyclical",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "MTSI",
+    "Name": "MACOM Technology Solutions Holdings, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "AMAT",
+    "Name": "Applied Materials, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "NBIX",
+    "Name": "Neurocrine Biosciences, Inc.",
+    "Sector": "Healthcare",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "MTZ",
+    "Name": "MasTec, Inc.",
+    "Sector": "Industrials",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "ADI",
+    "Name": "Analog Devices, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "CIEN",
+    "Name": "Ciena Corporation",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "TER",
+    "Name": "Teradyne, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "COHR",
+    "Name": "Coherent Corp.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "ARM",
+    "Name": "Arm Holdings plc",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "SMTC",
+    "Name": "Semtech Corporation",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-09-11"
   }
 ]

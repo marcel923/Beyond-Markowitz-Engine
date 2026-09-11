@@ -26,6 +26,7 @@ SIDEBAR_ITEMS = [
     ("overview", "OV", "Overview"),
     ("research", "RS", "Research"),
     ("rebalance", "RB", "Rebalance"),
+    ("relval", "RV", "Relative Value"),
     ("sandbox", "SB", "Sandbox"),
 ]
 
@@ -169,6 +170,7 @@ app.layout = html.Div(style={
                         "width": "100%", "padding": "7px", "backgroundColor": "transparent", "color": THEME["accent"],
                         "border": f"1px solid {THEME['accent']}", "borderRadius": "4px", "fontSize": "11px", "fontWeight": "700", "cursor": "pointer"
                     }),
+                    html.Div(id="research-new-ticker-status", style={"marginTop": "8px", "fontSize": "11px"}),
                 ]),
             ]),
 
@@ -325,12 +327,36 @@ app.layout = html.Div(style={
                 html.Div(style={"marginBottom": "16px"}, children=[
                     html.Div(style={"backgroundColor": THEME["bg_card"], "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}", "padding": "22px"}, children=[
                         html.Div("STAGE 01 // DATA STREAM INGESTION", style={"fontSize": "11px", "color": THEME["text_dim"], "fontWeight": "bold", "marginBottom": "10px"}),
-                        html.H2("Asset Input Stream", style={"fontSize": "32px", "fontWeight": "700", "margin": "0 0 25px 0"}),
-                        dcc.Textarea(
-                            id="input-tickers-raw", value="NVDA, MU, AVGO, PODD, AVAV, LLY, ARGX, KKR",
-                            style={"width": "100%", "height": "110px", "padding": "18px 24px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}", "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "16px"}
-                        ),
-                        html.Button("INITIALIZE DATASETS →", id="btn-validate", n_clicks=0, style={"width": "100%", "marginTop": "20px", "padding": "14px", "backgroundColor": THEME["bg_input"], "color": THEME["text_white"], "border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px", "fontWeight": "600", "cursor": "pointer"}),
+                        html.H2("Asset Input Stream", style={"fontSize": "32px", "fontWeight": "700", "margin": "0 0 20px 0"}),
+
+                        dcc.Store(id="store-stage1-universe-refresh", data=0),
+
+                        html.Div(style={"display": "flex", "gap": "10px", "alignItems": "center", "marginBottom": "14px"}, children=[
+                            dcc.Input(id="stage1-universe-search", type="text", placeholder="Szukaj w uniwersum...", style={
+                                "flex": "1", "padding": "9px 12px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
+                                "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "13px", "boxSizing": "border-box"
+                            }),
+                            html.Div(id="stage1-universe-count", style={"fontSize": "11px", "color": THEME["text_label"], "whiteSpace": "nowrap"}),
+                        ]),
+
+                        html.Div(style={"maxHeight": "260px", "overflowY": "auto", "border": f"1px solid {THEME['border']}", "borderRadius": "4px", "padding": "12px", "backgroundColor": THEME["bg_input"]}, children=[
+                            dcc.Checklist(id="checklist-universe-tickers", options=[], value=[], inputStyle={"marginRight": "8px"},
+                                          labelStyle={"display": "block", "padding": "5px 0", "fontSize": "13px", "color": THEME["text_white"]}),
+                        ]),
+
+                        html.Div(style={"display": "flex", "gap": "10px", "marginTop": "12px"}, children=[
+                            dcc.Input(id="stage1-new-ticker-input", type="text", placeholder="np. AAPL -- dodaj nową spółkę do uniwersum", style={
+                                "flex": "1", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
+                                "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                            }),
+                            html.Button("+ DODAJ DO UNIWERSUM", id="stage1-new-ticker-btn", n_clicks=0, style={
+                                "padding": "8px 16px", "backgroundColor": "transparent", "color": THEME["accent"],
+                                "border": f"1px solid {THEME['accent']}", "borderRadius": "4px", "fontSize": "11px", "fontWeight": "700", "cursor": "pointer"
+                            }),
+                        ]),
+                        html.Div(id="stage1-new-ticker-status", style={"marginTop": "8px", "fontSize": "11px"}),
+
+                        html.Button("INITIALIZE DATASETS →", id="btn-validate", n_clicks=0, style={"width": "100%", "marginTop": "16px", "padding": "14px", "backgroundColor": THEME["bg_input"], "color": THEME["text_white"], "border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px", "fontWeight": "600", "cursor": "pointer"}),
                         html.Div(id="validated-tags-container", style={"marginTop": "20px", "display": "flex", "flexWrap": "wrap", "gap": "10px"})
                     ])
                 ]),
@@ -582,6 +608,140 @@ app.layout = html.Div(style={
     ])  # koniec dcc.Tabs (tab-1..tab-4)
     ]),  # koniec module-rebalance
 
+    html.Div(id="module-relval", style={"display": "none"}, children=[
+        dcc.Store(id="store-relval-pair-data"),
+
+        dcc.Tabs(id="relval-subtabs", value="relval-tab-scan", style=TABS_CONTAINER_STYLE, children=[
+
+            dcc.Tab(label="SKANER I ANALIZA PARY", value="relval-tab-scan", style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE, children=[
+                html.Div(style={"paddingTop": "16px"}, children=[
+
+                    html.Div(style={"border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px", "marginBottom": "16px"}, children=[
+                        html.Div(style={"padding": "12px 20px", "borderBottom": f"1px solid {THEME['border']}", "backgroundColor": THEME["bg_head"]}, children=[
+                            html.Div("RELATIVE VALUE -- SKANER PAR KOINTEGRACYJNYCH", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div(
+                                "Skanuje CAŁE uniwersum spółek (niezależnie od tego, co zaznaczone w Rebalance na bieżący cykl) pod kątem par "
+                                "o statystycznie potwierdzonej kointegracji (Engle-Granger). Tabela pokazuje WSZYSTKIE pary, które przeszły "
+                                "próg dryfu 2Y -- łącznie z tymi, które nie przeszły wszystkich 4 bramek (kolumna \"Bramki\"), żeby było widać "
+                                "pary blisko kwalifikacji. Wynik jest czysto diagnostyczny -- nie wpływa jeszcze na wagi w Rebalance. "
+                                "Przy większym uniwersum (100+ spółek) skanowanie może potrwać kilka minut.",
+                                style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
+                            ),
+                            html.Button("SKANUJ UNIWERSUM", id="btn-relval-scan", n_clicks=0, style={
+                                "padding": "10px 20px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                                "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer"
+                            }),
+                            html.Div(id="relval-scan-status", style={"marginTop": "10px", "fontSize": "12px"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px"}, children=[
+                            dcc.Loading(id="loading-relval-scan", type="circle", color=THEME["accent"], children=[
+                                html.Div(id="relval-results-table"),
+                            ]),
+                        ]),
+                    ]),
+
+                    html.Div(style={"border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px"}, children=[
+                        html.Div(style={"padding": "12px 20px", "borderBottom": f"1px solid {THEME['border']}", "backgroundColor": THEME["bg_head"]}, children=[
+                            html.Div("ANALIZA WYBRANEJ PARY -- DOWOLNE DWA TICKERY", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}", "display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap"}, children=[
+                            html.Div(style={"flex": "1", "minWidth": "180px"}, children=[
+                                html.Div("SPÓŁKA A", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                dcc.Dropdown(id="relval-picker-a", options=[], clearable=False),
+                            ]),
+                            html.Div(style={"flex": "1", "minWidth": "180px"}, children=[
+                                html.Div("SPÓŁKA B", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                dcc.Dropdown(id="relval-picker-b", options=[], clearable=False),
+                            ]),
+                            html.Button("ANALIZUJ PARĘ", id="btn-relval-analyze", n_clicks=0, style={
+                                "padding": "9px 20px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                                "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer", "height": "38px"
+                            }),
+                        ]),
+                        html.Div(id="relval-pair-diagnostics", style={"padding": "16px 20px", "borderBottom": f"1px solid {THEME['border']}"}),
+
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div("PROGI STRATEGII (diagnostyczne -- nie wpływają jeszcze na Rebalance)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "14px"}),
+                            html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr", "gap": "16px 24px"}, children=[
+                                html.Div([
+                                    html.Div("ENTRY Z (próg wejścia)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "6px"}),
+                                    dcc.Slider(id="relval-slider-entry-z", min=0.5, max=3.0, step=0.1, value=1.5, marks=None, tooltip={"placement": "bottom", "always_visible": True}),
+                                ]),
+                                html.Div([
+                                    html.Div("EXIT Z (powrót do neutralnej)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "6px"}),
+                                    dcc.Slider(id="relval-slider-exit-z", min=0.0, max=1.0, step=0.05, value=0.25, marks=None, tooltip={"placement": "bottom", "always_visible": True}),
+                                ]),
+                                html.Div([
+                                    html.Div("FAVOUR WEIGHT (np. 0.80 = 80/20)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "6px"}),
+                                    dcc.Slider(id="relval-slider-favour-weight", min=0.55, max=0.95, step=0.05, value=0.80, marks=None, tooltip={"placement": "bottom", "always_visible": True}),
+                                ]),
+                            ]),
+                        ]),
+
+                        html.Div(style={"padding": "18px 20px"}, children=[
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                dcc.Graph(id="relval-strategy-chart", config={"displayModeBar": False}, style={"height": "700px"}),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+
+            dcc.Tab(label="ANALIZA WSTECZNA (BATCH)", value="relval-tab-batch", style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE, children=[
+                html.Div(style={"paddingTop": "16px"}, children=[
+                    html.Div(style={"border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px", "marginBottom": "16px"}, children=[
+                        html.Div(style={"padding": "12px 20px", "borderBottom": f"1px solid {THEME['border']}", "backgroundColor": THEME["bg_head"]}, children=[
+                            html.Div("BACKTEST ATTRIBUTION -- CO NAPRAWDĘ TŁUMACZY WYNIK", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div(
+                                "Odpala pełny backtest (dynamiczna alokacja progowa) dla KAŻDEJ pary z ostatniego skanu uniwersum, niezależnie "
+                                "od tego, czy formalnie przeszła wszystkie 4 bramki -- ranking jest po RZECZYWISTYM wyniku (Alpha vs benchmark "
+                                "50/50), nie po liczbie bramek. Poniżej ranking dołączona jest analiza korelacji: które zmienne (p-value, "
+                                "half-life, hedge ratio, dryf, zmienność spreadu, ten sam sektor) faktycznie tłumaczą, które pary wygrywają. "
+                                "Wymaga wcześniejszego uruchomienia skanu w zakładce \"Skaner i Analiza Pary\".",
+                                style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
+                            ),
+                            html.Div(style={"display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap"}, children=[
+                                html.Div(style={"minWidth": "220px"}, children=[
+                                    html.Div("MINIMALNA LICZBA BRAMEK DO WŁĄCZENIA", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Dropdown(id="relval-batch-min-gates", clearable=False, value=1, options=[
+                                        {"label": f"{n} / 3 lub więcej", "value": n} for n in [1, 2, 3]
+                                    ]),
+                                ]),
+                                html.Button("URUCHOM ANALIZĘ WSTECZNĄ", id="btn-relval-batch-run", n_clicks=0, style={
+                                    "padding": "10px 20px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                                    "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer", "height": "38px"
+                                }),
+                            ]),
+                            html.Div(id="relval-batch-status", style={"marginTop": "10px", "fontSize": "12px"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div("KORELACJA ZMIENNYCH Z ALPHA (co faktycznie tłumaczy przewagę)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                html.Div(id="relval-batch-correlations"),
+                            ]),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div("p-value vs ALPHA -- CZY FORMALNA JAKOŚĆ KOINTEGRACJI PRZEWIDUJE WYNIK?", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                dcc.Graph(id="relval-batch-scatter", config={"displayModeBar": False}, style={"height": "420px"}),
+                            ]),
+                        ]),
+                        html.Div(style={"padding": "18px 20px"}, children=[
+                            html.Div("RANKING PAR PO RZECZYWISTYM WYNIKU BACKTESTU", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                html.Div(id="relval-batch-table"),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+        ]),
+    ]),
+
     html.Div(id="module-sandbox", style={"display": "none"}, children=[
             html.Div(style={"paddingTop": "30px"}, children=[
                 html.Div(id="panel-stage4b-tracker-container", style={"marginBottom": "16px"}, children=[
@@ -738,27 +898,28 @@ app.layout = html.Div(style={
 @app.callback(
     Output("store-active-module", "data"),
     Output("module-overview", "style"), Output("module-research", "style"),
-    Output("module-rebalance", "style"), Output("module-sandbox", "style"),
+    Output("module-rebalance", "style"), Output("module-relval", "style"), Output("module-sandbox", "style"),
     Output("navitem-overview", "style"), Output("navitem-research", "style"),
-    Output("navitem-rebalance", "style"), Output("navitem-sandbox", "style"),
+    Output("navitem-rebalance", "style"), Output("navitem-relval", "style"), Output("navitem-sandbox", "style"),
     Output("navitem-overview", "children"), Output("navitem-research", "children"),
-    Output("navitem-rebalance", "children"), Output("navitem-sandbox", "children"),
+    Output("navitem-rebalance", "children"), Output("navitem-relval", "children"), Output("navitem-sandbox", "children"),
     Input("navitem-overview", "n_clicks"), Input("navitem-research", "n_clicks"),
-    Input("navitem-rebalance", "n_clicks"), Input("navitem-sandbox", "n_clicks"),
+    Input("navitem-rebalance", "n_clicks"), Input("navitem-relval", "n_clicks"), Input("navitem-sandbox", "n_clicks"),
     prevent_initial_call=True,
 )
-def switch_active_module(n_ov, n_rs, n_rb, n_sb):
+def switch_active_module(n_ov, n_rs, n_rb, n_rv, n_sb):
     """
-    Sidebar navigation (Etap 3). Every nav item's `n_clicks` is an Input, so
-    clicking ANY of the 4 items fires this once; `dash.callback_context`
-    tells us which one triggered to determine the new active module --
-    exactly the same pattern already used by `toggle_inspector_sidebar`
+    Sidebar navigation (Etap 3, extended Etap 6 for the 5th module --
+    Relative Value). Every nav item's `n_clicks` is an Input, so clicking
+    ANY of the 5 items fires this once; `dash.callback_context` tells us
+    which one triggered to determine the new active module -- exactly the
+    same pattern already used by `toggle_inspector_sidebar`
     (ui/tab1_market_data.py) and several Tab 5 callbacks (dash.callback_context
     for delete-confirmation state), kept consistent rather than introducing a
     different mechanism just for this one callback.
 
     Explicit Outputs (not a STAGE4A_PARAMS_CONFIG-style loop) because there
-    are only 4 modules and mixing two different property types (style +
+    are only 5 modules and mixing two different property types (style +
     children) per item -- a loop would need to reconstruct the same
     id-list-zipping this already reads clearly enough at this size.
     """

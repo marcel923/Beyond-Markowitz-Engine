@@ -68,7 +68,7 @@ from dash.dependencies import Input, Output, State, ALL
 
 from ui.app_instance import app
 from ui.theme import THEME
-from ui.components import build_kpi_strip, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule
+from ui.components import build_kpi_strip, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule, parse_single_ticker_input
 from data import universe_store as uni
 from data import company_store as comp
 from data.market_data import fetch_current_prices, fetch_company_profile, fetch_universe_prices
@@ -167,6 +167,7 @@ def render_company_list(search_value, _refresh):
 @app.callback(
     Output("store-research-selected-ticker", "data"),
     Output("store-research-refresh", "data", allow_duplicate=True),
+    Output("research-new-ticker-status", "children"),
     Input({"type": "research-company-row", "ticker": ALL}, "n_clicks"),
     Input("research-new-ticker-btn", "n_clicks"),
     State("research-new-ticker-input", "value"),
@@ -179,27 +180,32 @@ def select_ticker(_row_clicks, _new_clicks, new_ticker_value, refresh_counter):
     "+ SLEDZ" nowego tickera: dodaje go do uniwersum NATYCHMIAST (auto-fetch
     Name/Sector), zanim jakiekolwiek dane fundamentalne zostana wpisane --
     sledzenie i wypelnianie danych to dwa niezalezne kroki.
+
+    Walidacja przez parse_single_ticker_input (ui/components.py, dzielona z
+    Tab 1) -- poprawka po realnym bledzie znalezionym w testach: wpisanie
+    "AVGO, CRDO" bylo wczesniej cicho akceptowane jako JEDEN literalny
+    ticker.
     """
     ctx = dash.callback_context
     if not ctx.triggered:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
     trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
 
     if trigger_id == "research-new-ticker-btn":
-        if not new_ticker_value or not new_ticker_value.strip():
-            return dash.no_update, dash.no_update
-        ticker = new_ticker_value.strip().upper()
+        ticker, error = parse_single_ticker_input(new_ticker_value)
+        if error:
+            return dash.no_update, dash.no_update, html.Div(error, style={"color": THEME["neg"]})
         profile = fetch_company_profile(ticker)
         uni.upsert_company(ticker, name=profile["name"], sector=profile["sector"], status="Watchlist")
-        return ticker, (refresh_counter or 0) + 1
+        return ticker, (refresh_counter or 0) + 1, html.Div(f"Dodano {ticker}.", style={"color": THEME["pos"]})
 
     if any(c["value"] for c in ctx.triggered if c["value"]):
         try:
             parsed = json.loads(trigger_id)
-            return parsed.get("ticker"), dash.no_update
+            return parsed.get("ticker"), dash.no_update, dash.no_update
         except (json.JSONDecodeError, AttributeError):
-            return dash.no_update, dash.no_update
-    return dash.no_update, dash.no_update
+            return dash.no_update, dash.no_update, dash.no_update
+    return dash.no_update, dash.no_update, dash.no_update
 
 
 # ---------------------------------------------------------------------------

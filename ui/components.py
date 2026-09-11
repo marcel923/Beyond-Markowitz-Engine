@@ -8,11 +8,59 @@ DataTable cell styling, KPI cards, and the Stage 4 parameter input card
 Moved out of quant_terminal.py (Etap 0 architecture split, PROJECT_CONTEXT.md)
 with NO behavior change.
 """
+import re
+
 import numpy as np
 import pandas as pd
 from dash import dcc, html
 
 from ui.theme import THEME
+
+TICKER_PATTERN = re.compile(r'^[A-Z0-9]{1,10}(\.[A-Z]{1,4})?$')
+
+
+def parse_single_ticker_input(raw_text):
+    """
+    Validates a raw "add new ticker" text-input value is exactly ONE
+    plausible ticker -- shared by ui/tab1_market_data.py's "+ DODAJ DO
+    UNIWERSUM" and ui/module_research.py's "+ ŚLEDŹ", both of which
+    previously accepted whatever was typed as a single literal ticker
+    string with no validation.
+
+    Real bug found in testing (2026-09-08): typing "AVGO, CRDO" (meaning to
+    add Broadcom and Credo, or simply a typo) was silently accepted as ONE
+    ticker string "AVGO, CRDO" -- yfinance's lenient `.info` search loosely
+    matched it to Broadcom's profile, so the Name/Sector auto-fill looked
+    plausible, while the stored `Ticker` field kept the literal
+    "AVGO, CRDO" including the comma and second symbol, as if ", CRDO" were
+    part of the ticker itself.
+
+    Splits on common separators (comma, semicolon, whitespace) and REJECTS
+    (rather than silently taking the first token, or concatenating them)
+    if more than one token results -- this project's "+" buttons only ever
+    add one company at a time by design, so multiple tokens signal a
+    mistake or a misunderstanding of the field, not a batch-add request.
+
+    Also rejects a single token that doesn't match a plausible ticker shape
+    (`TICKER_PATTERN`: letters/digits, with an optional dot-suffix for
+    non-US exchanges already present in this project's universe, e.g.
+    "005930.KS", "000660.KS", "LYC.AX").
+
+    Returns (ticker: str, None) on success, or (None, error_message: str)
+    otherwise -- never raises.
+    """
+    if not raw_text or not raw_text.strip():
+        return None, "Wpisz ticker."
+
+    tokens = [t for t in re.split(r'[,;\s]+', raw_text.strip()) if t]
+    if len(tokens) > 1:
+        return None, f"Wpisz tylko jeden ticker na raz (wykryto {len(tokens)}: {', '.join(tokens)})."
+
+    ticker = tokens[0].upper()
+    if not TICKER_PATTERN.match(ticker):
+        return None, f"'{ticker}' nie wygląda na poprawny ticker."
+
+    return ticker, None
 
 def hex_to_rgb(hex_str):
     hex_str = hex_str.lstrip('#')

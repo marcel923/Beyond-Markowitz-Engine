@@ -30,7 +30,9 @@ except ImportError:
 
 from ui.app_instance import app
 from ui.theme import THEME, CLUSTER_PALETTE, CHART_COLORS, MATRIX_COLORSCALE, MATRIX_SEQUENTIAL_COLORSCALE
-from ui.components import generate_tws_matrix_styles, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule
+from ui.components import generate_tws_matrix_styles, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule, parse_single_ticker_input
+from data import universe_store as uni
+from data.market_data import fetch_company_profile
 from engine.clustering import (
     compute_semicovariance_matrix, semicov_to_semicorr, rmt_denoise_correlation,
     compute_elbow_eps, dtw_distance, compute_dtw_distance_matrix, kmedoids,
@@ -180,17 +182,79 @@ def toggle_inspector_sidebar(open_clicks, close_clicks, current_class):
 
 
 @app.callback(
+    Output("checklist-universe-tickers", "options"),
+    Output("stage1-universe-count", "children"),
+    Input("stage1-universe-search", "value"),
+    Input("store-stage1-universe-refresh", "data"),
+    Input("checklist-universe-tickers", "value"),
+    prevent_initial_call=False,
+)
+def render_universe_checklist(search_value, _refresh, checked_values):
+    """
+    Populuje TYLKO `options` listy uniwersum -- nigdy nie dotyka `value`
+    (aktualnie zaznaczonych tickerow), zeby filtrowanie wyszukiwarka nie
+    czyscilo zaznaczenia zrobionego wczesniej. Checked_values jest Inputem
+    tylko po to, zeby licznik "X zaznaczonych" byl zywy -- sam callback nic
+    do niego nie zapisuje.
+    """
+    companies = uni.list_companies()
+    if search_value:
+        needle = search_value.strip().upper()
+        companies = [c for c in companies if needle in c.get("Ticker", "").upper()]
+    options = [{"label": f"{c['Ticker']}" + (f" — {c['Name']}" if c.get("Name") else ""), "value": c["Ticker"]} for c in companies]
+    count_label = f"{len(checked_values or [])} zaznaczonych / {len(uni.list_companies())} w uniwersum"
+    return options, count_label
+
+
+@app.callback(
+    Output("checklist-universe-tickers", "value"),
+    Output("store-stage1-universe-refresh", "data"),
+    Output("stage1-new-ticker-status", "children"),
+    Input("stage1-new-ticker-btn", "n_clicks"),
+    State("stage1-new-ticker-input", "value"),
+    State("checklist-universe-tickers", "value"),
+    State("store-stage1-universe-refresh", "data"),
+    prevent_initial_call=True,
+)
+def add_new_universe_ticker(_n_clicks, new_ticker_value, currently_checked, refresh_counter):
+    """
+    Dodaje nowy ticker do uniwersum (auto-fetch Name/Sector przez yfinance,
+    ten sam mechanizm co "+ SLEDZ" w Research) i od razu go zaznacza na
+    liscie -- skoro dodajesz go w tym momencie, najpewniej chcesz go od razu
+    uwzglednic w biezacym rebalansie, nie tylko dopisac do bazy.
+
+    Walidacja przez parse_single_ticker_input (ui/components.py) -- poprawka
+    po realnym bledzie znalezionym w testach: wpisanie "AVGO, CRDO" bylo
+    wczesniej cicho akceptowane jako JEDEN literalny ticker "AVGO, CRDO"
+    (yfinance dopasowywal go luzno do Broadcom przy auto-fetch nazwy, ale w
+    bazie zostawal zapisany ticker z przecinkiem i drugim symbolem w srodku).
+    """
+    ticker, error = parse_single_ticker_input(new_ticker_value)
+    if error:
+        return dash.no_update, dash.no_update, html.Div(error, style={"color": THEME["neg"]})
+
+    profile = fetch_company_profile(ticker)
+    uni.upsert_company(ticker, name=profile["name"], sector=profile["sector"], status="Watchlist")
+
+    updated_checked = list(currently_checked or [])
+    if ticker not in updated_checked:
+        updated_checked.append(ticker)
+    return updated_checked, (refresh_counter or 0) + 1, html.Div(f"Dodano {ticker} do uniwersum.", style={"color": THEME["pos"]})
+
+
+@app.callback(
     Output("dropdown-active-asset", "options"), Output("dropdown-active-asset", "value"), Output("validated-tags-container", "children"),
     Output("panel-preview-container", "style"), Output("panel-matrix-container", "style"), Output("panel-config-stage2-container", "style"),
     Output("matrix-date-range-sub", "children"), Output("table-correlation-wrapper", "children"),
     Output("store-raw-close", "data"), Output("store-monthly-returns", "data"),
     Output("store-daily-returns", "data"), Output("store-semicov-matrix", "data"),
     Output("error-output", "children"),
-    Input("btn-validate", "n_clicks"), State("input-tickers-raw", "value")
+    Input("btn-validate", "n_clicks"), State("checklist-universe-tickers", "value")
 )
-def run_stage_01_ingestion(n_clicks, raw_input):
-    if n_clicks == 0 or not raw_input: return dash.no_update, dash.no_update, dash.no_update, {"display": "none"}, {"display": "none"}, {"display": "none"}, "", "", None, None, None, None, ""
-    tickers = [t.strip().upper() for t in raw_input.replace(",", " ").split(" ") if t.strip()]
+def run_stage_01_ingestion(n_clicks, tickers):
+    if n_clicks == 0: return dash.no_update, dash.no_update, dash.no_update, {"display": "none"}, {"display": "none"}, {"display": "none"}, "", "", None, None, None, None, ""
+    if not tickers: return [], None, [], {"display": "none"}, {"display": "none"}, {"display": "none"}, "", "", None, None, None, None, "Zaznacz przynajmniej jedną spółkę z uniwersum."
+    tickers = [t.strip().upper() for t in tickers if t.strip()]
 
     if not tickers: return [], None, [], {"display": "none"}, {"display": "none"}, {"display": "none"}, "", "", None, None, None, None, "No tickers found."
 

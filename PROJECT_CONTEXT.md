@@ -1098,7 +1098,519 @@ project's actual ~40-ticker universe.
 
 ---
 
-## 6. Implementation Status & Development Roadmap
+## 6. Etap 5 — Universum napędza Tab 1 (complete)
+
+**Numbering note:** sections 5d–5l above accumulated a long, ever-growing
+chain of sub-lettered follow-ups under "Etap 5" (design corrections,
+sidebar, Research module, walk-forward engine, stability measure, pairs
+screener) — the project owner flagged this as unsustainable (2026-09-08).
+Going forward, each new major undertaking gets its own fresh top-level
+Etap number instead of another sub-letter. This is Etap 5 (renumbered from
+an earlier draft plan that called it "5a"); Etap 6 and Etap 7 are its two
+planned siblings from the same conversation (a new "Relative Value"
+cointegration module, and save-buttons in Rebalance/Research), not yet
+implemented as of this section.
+
+First of three planned, independent pieces (confirmed scope, 2026-09-08):
+finishes wiring `data/universe_store.py` (built in Etap 1, previously only
+consumed by the Research module) into the Rebalance workflow's own ticker
+selection, replacing Stage 1's free-text `dcc.Textarea` with a searchable,
+checkbox-based universe picker — **unchecked by default** (confirmed
+explicitly: the project owner picks ~30-40 of an eventual ~160-name
+universe per rebalance, so defaulting to all-checked would mean unchecking
+~120 every session instead of checking the ~30-40 actually wanted).
+
+**`ui/layout.py`:** `input-tickers-raw` (the old textarea) replaced with: a
+search box (`stage1-universe-search`) filtering a `dcc.Checklist`
+(`checklist-universe-tickers`) populated from `universe_store.list_companies()`;
+a live "X zaznaczonych / Y w uniwersum" counter; and a mini "+ DODAJ DO
+UNIWERSUM" form (ticker input + button) mirroring the Research module's
+"+ ŚLEDŹ" pattern exactly — same auto-fetch-Name/Sector-via-yfinance
+mechanism (`data.market_data.fetch_company_profile`), same
+`universe_store.upsert_company(..., status="Watchlist")` call. No `Status`
+filtering is applied to what's shown in this checklist (every tracked
+company appears regardless of Active_Screened/Watchlist) — the project
+owner was explicit that the Active_Screened/Watchlist distinction isn't a
+concept they want surfaced here; the checkbox state itself (fresh per
+session, nothing persisted) is the only "am I using this ticker in this
+rebalance" signal for Tab 1.
+
+**`ui/tab1_market_data.py`:**
+- New `render_universe_checklist(search, refresh, checked_values)`: populates
+  ONLY the Checklist's `options` from the (optionally search-filtered)
+  universe — **never writes to `value`**, so filtering the search box can
+  never clear a selection made before or after filtering (verified
+  directly, see below — not just asserted).
+- New `add_new_universe_ticker(...)`: adds a brand-new ticker to
+  `universe_store` and immediately appends it to the currently-checked list
+  (adding a ticker mid-session almost certainly means wanting it in THIS
+  rebalance too, not just registered for later).
+- `run_stage_01_ingestion` (the existing Stage 1 ingestion callback,
+  otherwise completely unchanged) now reads `checklist-universe-tickers`'s
+  `value` (already a clean list of ticker strings) instead of parsing a
+  free-text textarea (`raw_input.replace(",", " ").split(" ")` — that
+  parsing logic is gone entirely, made obsolete by the Checklist's own
+  `value` shape). A real, if minor, UX regression was caught and fixed
+  during this change: the old textarea shipped with a pre-filled default
+  value, so submitting it empty was rare; the new checklist starts EMPTY by
+  design, making "click INITIALIZE DATASETS with nothing checked" a much
+  more likely first-time mistake. The old code's single combined check
+  (`if n_clicks == 0 or not raw_input`) collapsed both "never clicked" and
+  "clicked with nothing entered" into the same silent no-op with an empty
+  error string; split into two checks so the now-more-likely "clicked with
+  nothing selected" case gets its own message ("Zaznacz przynajmniej jedną
+  spółkę z uniwersum.") instead of silently doing nothing.
+
+Verified: all 6 new component ids present in the rendered layout tree;
+`render_universe_checklist` confirmed to filter `options` correctly by
+search AND — the specific behavior that actually matters here — confirmed
+that during an active search filter, the "X zaznaczonych" counter still
+correctly reports previously-checked tickers that are no longer visible in
+the filtered options list (this is not just an assertion on the return
+value: the callback's `Output` list *structurally* never includes
+`checklist-universe-tickers.value`, so there is no code path by which it
+could clear a selection — verified both by reading the Output list and by
+exercising the function with a filtered search alongside a fixed checked
+list); `add_new_universe_ticker` confirmed to add to `universe_store` AND
+extend the checked list in one step (yfinance calls correctly degrade to
+empty name/sector under this sandbox's network restrictions, as designed,
+without crashing the flow); `run_stage_01_ingestion`'s three edge cases
+(never clicked, clicked with `None`, clicked with `[]`) each verified to
+produce the correct distinct outcome. Full app integration recheck (48/48
+callbacks -- 46 prior + 2 new), solver regression rerun (identical weights
+to every prior check in this project's history).
+
+**Not yet done, explicitly deferred to Etap 6 and Etap 7** (separate,
+independent pieces from the same conversation, per the confirmed plan):
+- Etap 6: a new "Relative Value" module (renamed from an earlier
+  "Pair Trading Research" working title — deliberately not "pair trading",
+  since that phrasing implies the classical market-neutral strategy this
+  project explicitly rejected) surfacing `engine/pairs.py`'s cointegration
+  screener over the full universe, with its own independent price fetch
+  (not reusing Tab 1's session-scoped `store-raw-close`, since the screener
+  must run over the WHOLE universe regardless of which ~30-40 tickers are
+  checked for any given rebalance).
+- Etap 7: a portfolio-save button in Rebalance's Stage 4B results panel
+  (using the existing `data/snapshot_store.py`, just exposed nearer the
+  result rather than only in Sandbox), and two buttons in Stage 3's
+  fundamental-inputs table ("Przejdź dalej bez zapisu" / "Zapisz i przejdź
+  dalej" — the latter saving each table row individually to
+  `company_history/{ticker}.json` via the existing
+  `company_store.append_entry()`, dated today).
+
+---
+
+## 7. Etap 6 — Relative Value Module (screener wired to UI, diagnostic only)
+
+Second of the three pieces confirmed in the 2026-09-08 conversation
+("Etap 5/6/7" — see Section 6's numbering note). Surfaces
+`engine/pairs.py`'s cointegration screener (Section 5l) as a real,
+usable UI feature for the first time — that module had been engine-layer
+only, verified with synthetic data, with no Dash surface at all until now.
+
+**New sidebar module, "Relative Value"** (deliberately not "Pair Trading"
+— the project owner's own naming choice, since that phrasing implies the
+classical market-neutral long/short strategy this project's cointegration
+report explicitly rejected). Fifth item in `SIDEBAR_ITEMS`
+(`ui/layout.py`), inserted between Rebalance and Sandbox. Extending the
+sidebar from 4 to 5 modules required touching `switch_active_module`'s
+`@app.callback` decorator (which lists every module/navitem id explicitly,
+by design — see Section 5f's note on why this isn't a
+`STAGE4A_PARAMS_CONFIG`-style loop) and its function signature; the
+function BODY itself needed no change, since it already iterates
+`SIDEBAR_ITEMS` generically rather than hardcoding a count anywhere.
+Re-verified all 5 nav positions individually after the change (not just
+the new one) — each correctly shows exactly one module and hides the
+other four.
+
+**Scope, confirmed explicitly:** diagnostic only in this pass. The scanner
+identifies candidate pairs and shows the same ranked table structure as
+`engine/pairs.py` (Ticker A/B, 2Y drift, p-value, half-life, hedge ratio,
+Score) — it does NOT yet feed into Rebalance's `mu_i` or Stage 1 SLSQP in
+any way. The `theta * tanh(-Z)` mu-adjustment mechanism agreed earlier in
+conversation is an explicit, separate, later step, deferred until the
+project owner has reviewed real screener output against their actual
+universe.
+
+**Independent price fetch, by design (not a shortcut).** The scan
+(`ui/module_relative_value.py`'s `run_relative_value_scan`) fetches prices
+for EVERY ticker in `universe_store` via `data.market_data.fetch_universe_prices`,
+completely independent of whatever subset is checked in Rebalance's Stage 1
+`checklist-universe-tickers` (Section 6) for the current rebalance cycle.
+This directly reflects the confirmed intended pipeline order: pair
+screening happens across the WHOLE universe FIRST, and only what doesn't
+sensibly pair up goes through the existing Ward/DTW/RMT clustering in
+Rebalance — a pair candidate must be discoverable regardless of which
+~30-40 names happen to be checked for any given month's rebalance.
+
+**No background-callback infrastructure in this pass (confirmed scope).**
+A full scan across a large universe (100+ names, ~C(160,2)=12,720 pairs at
+the project owner's eventual target size) is a genuine multi-minute
+blocking wait, not a UX bug -- `dcc.Loading` wraps the results `Output` so
+the spinner shows for the duration. Revisiting this with real async/background
+execution is a possible future improvement if the wait proves impractical
+in practice, not addressed now.
+
+Verified: `run_relative_value_scan` tested end-to-end against synthetic
+data via a monkeypatched `fetch_universe_prices` (no network access in this
+sandbox) — a 4-ticker synthetic universe (1 genuinely cointegrated pair + 2
+independent/spurious tickers) correctly returns exactly the one qualifying
+pair in the rendered `dash_table.DataTable`, with the independent tickers
+correctly absent; the "fewer than 2 tickers in universe" guard tested and
+confirmed; all 6 new component ids (`module-relval`, `navitem-relval`,
+`btn-relval-scan`, `relval-scan-status`, `relval-results-table`,
+`loading-relval-scan`) confirmed present in the rendered layout tree; all 5
+sidebar positions (not just the new one) individually re-verified after
+extending `switch_active_module`; Rebalance's own tab structure confirmed
+unchanged (still exactly 4 `dcc.Tab` children); full app integration
+recheck (49/49 callbacks — 48 prior + 1 new); solver regression rerun
+(identical weights to every prior check in this project's history).
+
+**Not yet done, still explicitly deferred to Etap 7** (per the confirmed
+plan): a portfolio-save button in Rebalance's Stage 4B results panel, and
+two buttons in Stage 3's fundamental-inputs table ("Przejdź dalej bez
+zapisu" / "Zapisz i przejdź dalej", the latter saving each table row to
+`company_history/{ticker}.json`).
+
+### 7a. Etap 6 extension (same day) — near-miss visibility + interactive pair simulation
+
+The initial Etap 6 scan only surfaced fully-qualifying pairs, using a
+plain results table. The project owner asked for three concrete
+additions, all implemented: (1) visibility into pairs that almost
+qualified ("np. przeszły 3 bramki"), (2) an equity-curve visualization
+matching the passive-50/50 vs 100%/0% vs dynamic-threshold-switching
+comparison from the audited reference script, and (3) the ability to pick
+ANY two tickers directly (not just ones from the ranking) and interact
+with adjustable thresholds (e.g. 80/20 -> 85/15) to see how the pair behaves.
+
+**`engine/pairs.py` refactor + two new functions:**
+- `evaluate_pair_diagnostics(prices_a, prices_b, ...)`: full gate-by-gate
+  diagnostics for ONE pair, deliberately NOT short-circuiting among gates
+  2-4 (cointegration / half-life / hedge ratio) -- returns every gate's
+  pass/fail boolean plus its underlying value, `gates_passed` (0-4), and
+  `all_passed`. Gate 1 (drift) is still evaluated as a hard PRE-filter by
+  callers scanning a whole universe (a pair with a wildly divergent 2Y
+  trajectory is a fundamentally bad candidate regardless of its other
+  statistics, and the expensive cointegration test shouldn't be spent on it).
+- `scan_universe_diagnostics(prices_df, tickers, ...)`: full-universe
+  near-miss scan -- every pair surviving the cheap drift pre-filter, with
+  complete diagnostics, sorted by (gates passed desc, Score asc). More
+  expensive than the original short-circuiting scan (every drift-surviving
+  pair now pays for the full cointegration test even if it will fail
+  later), an explicit, accepted tradeoff for near-miss visibility.
+- `find_cointegrated_pairs` refactored into a thin filter
+  (`gates_passed == 4`) over `scan_universe_diagnostics`'s output -- single
+  source of truth for the gate logic now, rather than a second, separately
+  maintained scan loop. **Verified by regression test to return byte-identical
+  results to the original short-circuiting implementation** on the same
+  4-scenario synthetic test suite used in Section 5l.
+- A real test-construction mistake was caught while verifying near-miss
+  behavior: a synthetic "negative hedge ratio" pair, expected to show "3 of
+  4 gates passed" (failing only the hedge-ratio gate), instead showed 2 of
+  4 -- investigation confirmed this was NOT a code bug: a pair with
+  opposite-direction price co-movement (negative hedge ratio) will almost
+  always ALSO show a large 2Y drift difference, since moving in opposite
+  directions compounds into wildly different cumulative returns over two
+  years. The gate-independence assumption in the original test design was
+  wrong, not the screener; `evaluate_pair_diagnostics`'s output was checked
+  directly against the sum of its own individual pass/fail flags and found
+  exactly consistent (2 = sum([False, True, True, False])), confirming the
+  counting mechanism itself is correct.
+
+**New function, `simulate_pair_strategy(...)`:** a discrete-event,
+threshold-switching Long-Only backtest for interactive exploration --
+explicitly a DIAGNOSTIC tool distinct from (not a preview of) the eventual
+monthly `theta*tanh(-Z)` mu-adjustment mechanism still deferred. State
+machine matches the confirmed 80/20-style design (entry_z / exit_z /
+favour_weight all adjustable). Z-score uses a ROLLING window on the OLS
+spread (distinct from the STATIC full-sample regression used for the
+screening p-value -- a live trading signal should adapt to recent spread
+dynamics; the screening test needs a fixed window to be statistically
+valid). Execution ported from the audited reference script's ALREADY-CORRECT
+physical-share, discrete-event logic (this was not one of that script's
+three bugs) -- verified independently rather than assumed correct:
+- **No "Shannon's Demon"**: on two genuinely independent random walks (no
+  real pair signal), the 50/50 benchmark's final value falls strictly
+  inside the corridor bounded by the two components' individual Buy & Hold
+  outcomes -- confirmed numerically, not just visually plausible.
+- Tighter thresholds produce more state transitions (18 vs 93 transitions
+  across two threshold settings on the same synthetic cointegrated pair).
+- `favour_weight` (0.80 vs 0.85) produces genuinely different realized
+  weight-history values, confirmed by direct inspection of the weight series.
+- Higher `fee_bps` produces strictly lower final equity on a
+  high-turnover (tight-threshold) run, confirmed numerically.
+
+**A real display bug found and fixed during UI testing:** the chart's
+strategy-curve legend showed "Dynamiczny Long-Only (80/19)" instead of
+"(80/20)" at the default `favour_weight=0.80` -- caused by `int()`
+truncating rather than rounding: `(1 - 0.80) * 100` evaluates to
+`19.999999999999996` in IEEE754 floating point, and `int()` truncates that
+toward zero, landing on 19. Fixed by using `round()` instead of `int()` for
+this display formatting; re-verified both the 80/20 and 85/15 cases render
+correctly. Caught by an assertion in the test suite, not by visual
+inspection -- a reminder (same lesson as Etap 3's f-string bug and Etap 5h's
+accidentally-deleted function signature) that floating-point/display
+formatting deserves an explicit check, not just "looks right" on one sample value.
+
+**UI (`ui/layout.py`, `ui/module_relative_value.py`):** the scan results
+table now shows every drift-surviving pair with a "Bramki" (Gates) column
+("4 / 4", "2 / 4", etc.) and a Status column, sorted best-first -- no
+separate toggle needed, near-misses are simply visible alongside
+qualifying pairs in the same table. A new "Analiza wybranej pary" section
+below it: two ticker dropdowns (populated from the full universe, not
+restricted to scan results) + an "ANALIZUJ PARĘ" button showing
+color-coded pass/fail badges for all 4 gates plus a 3-panel chart
+(equity curves / Z-score with entry-threshold reference lines / stacked
+weight-history area) built with `plotly.subplots.make_subplots`, matching
+the reference script's visual structure. Three sliders (entry Z, exit Z,
+favour weight) recompute the chart live via `simulate_pair_strategy` --
+fetching prices happens ONCE per "ANALIZUJ PARĘ" click (cached in
+`store-relval-pair-data`, just the two selected tickers' series, not the
+whole universe), so slider movement re-simulates against already-fetched
+data with no additional network calls.
+
+Verified: near-miss table rendering confirmed to include both a
+fully-qualifying pair AND a 1-of-4 pair in the same result set with
+correct badge/status text; `populate_pair_pickers` confirmed to list every
+universe ticker; `analyze_pair` confirmed for both a valid distinct pair
+and the same-ticker-twice rejection case; the 3-panel chart confirmed to
+render a placeholder with no cached data, and to actually change
+(non-trivial numeric difference in the plotted strategy curve) when either
+`entry_z` or `favour_weight` changes -- not just that the callback fires,
+that its OUTPUT numerically differs. Full app integration recheck (52/52
+callbacks -- 49 prior + 3 net-new here), solver regression rerun
+(identical weights to every prior check in this project's history).
+
+---
+
+### 7b. Real bug found and fixed — 2Y drift row-count vs calendar-date bug
+
+The project owner reported a concrete inconsistency: the SAME pair (AVGO vs
+P) showed "4/4 gates" in the universe scan table but "3/4 gates" when
+analyzed individually moments later, with drift 25.1pp in one case and
+62.6pp in the other (p-value/half-life/hedge-ratio only shifted slightly
+between the two).
+
+**Root cause, confirmed by reading `data/market_data.py`'s
+`fetch_universe_prices`:** `prices = prices.dropna(how='all').ffill().bfill()`.
+When yfinance batch-downloads MANY tickers spanning different exchange
+calendars (this project's universe mixes NYSE names with Korean tickers
+like "000660.KS"/"005930.KS"), the returned date index is the UNION of
+every exchange's trading days -- a US ticker gets "phantom" ffilled rows on
+days a foreign market was open but NYSE was closed. `engine/pairs.py`'s 2Y
+drift calculation used a fixed ROW-COUNT offset (`iloc[-504]`, "504 trading
+days ago"), which is only equivalent to "2 calendar years ago" if the
+series has exactly 252 real trading days per year with no extra rows --
+the total row count (and therefore which calendar date `-504` lands on)
+depends on which OTHER tickers happened to be in the same batch request,
+so the same pair fetched alone (2 tickers, clean calendar) vs. as part of
+a 14-ticker universe scan pointed to genuinely different calendar dates as
+"2 years ago".
+
+**Fix:** new `_drift_diff_2y()` helper anchors the reference point to an
+actual CALENDAR date (`today - CALENDAR_DAYS_2Y`, located via
+`searchsorted` against the real DatetimeIndex) instead of a row-count
+offset -- invariant to how many phantom rows are present, by construction.
+Applied consistently in both `evaluate_pair_diagnostics` and
+`scan_universe_diagnostics`'s cheap pre-filter (previously the two used
+DIFFERENT drift logic paths, which itself was a latent inconsistency risk
+beyond just the phantom-row issue). Verified numerically: a synthetic
+"solo vs batch" reproduction (same underlying prices, one version with
+extra ffilled rows injected near the 2Y boundary) confirmed the new method
+gives IDENTICAL drift values regardless of phantom rows (0.0000pp
+difference in two separate test constructions), while the old method is --
+by definition of positional indexing -- provably sensitive to total row
+count. A full regression against the existing 4-scenario synthetic test
+suite (Section 5l/7a) confirmed `find_cointegrated_pairs` and
+`scan_universe_diagnostics` still behave correctly after the change.
+
+### 7c. Backtest Attribution — new second sub-tab in Relative Value (complete)
+
+The project owner raised a deeper methodological question after reviewing
+real scan output: pairs passing only 2/4 formal gates (real-world example
+named: MU/WDC/SK Hynix/Samsung memory-sector pairs) produced excellent
+`simulate_pair_strategy` backtest results, while a pair passing 3/4 gates
+(AMD/MRVL) performed averagely or worse. This is now understood and
+addressed, not just observed: the 4 screening gates test whether a
+statistically stable equilibrium EXISTS (necessary for the mechanism to
+make sense at all), which is a different question from whether a
+Long-Only threshold-switching strategy actually PROFITS from it. A pair
+can be "significantly cointegrated" with tiny, rarely-triggered spread
+swings that barely beat the passive benchmark, while a pair that
+technically fails the formal screen can still perform very well if its
+Z-score swings are large and both names share a correlated growth trend
+the Long-Only mechanism captures on top of pure mean-reversion.
+
+**New engine functions (`engine/pairs.py`):**
+- `run_backtest_batch(prices_df, pairs_df, entry_z, exit_z, favour_weight, ...)`:
+  runs `simulate_pair_strategy` for every pair in a candidate table (e.g.
+  `scan_universe_diagnostics`'s full near-miss output), under the same
+  threshold settings, ranked by ACTUAL "Alpha vs Benchmark [pp]"
+  (= `(final_strategy/final_benchmark - 1) * 100`) rather than by gate-pass
+  count. Carries every original column through unchanged (so gate
+  diagnostics remain available for attribution) and adds "Final Equity",
+  "Max Drawdown [%]", "N Transitions", "Z-Score Std", and "Raw Spread
+  Volatility" (annualized std of the daily log-price-ratio, UNNORMALIZED).
+- `compute_correlations(df, target_col, candidate_cols)`: generic Pearson
+  correlation of each candidate column against a target column -- the
+  direct numeric answer to "which variable actually explains the
+  outperformance". Deliberately agnostic to where candidate columns came
+  from (gate diagnostics, `run_backtest_batch`'s own output, or a
+  `data.universe_store`-derived "Same Sector" boolean attached by the UI
+  layer -- `engine/` never imports `data/`, per the one-directional
+  dependency rule, so sector-matching is computed in `ui/module_relative_value.py`,
+  not here).
+
+**A real, informative finding from testing (not a bug, but an important
+correction to the initial design):** a synthetic 5-pair test with
+KNOWN, monotonically increasing raw spread amplitude (and therefore known
+increasing expected Alpha) initially showed **"Z-Score Std" correlating
+NEGATIVELY (-0.826)** with Alpha -- backwards from the intended
+hypothesis. Investigation confirmed this is not a bug in the correlation
+mechanism (which is mechanically correct and well-defined) but a real
+limitation of the chosen variable: Z-scoring is SCALE-INVARIANT by
+construction, so it can look similar across pairs with very different raw
+spread amplitude even though that raw amplitude is what actually
+determines the dollar-magnitude of gain captured per threshold crossing.
+Added "Raw Spread Volatility" (unnormalized) as a second, complementary
+variable specifically to capture this -- re-verified on the same synthetic
+data: correlates strongly and correctly POSITIVELY with Alpha (+0.915),
+with the pair ranking now matching the known ground truth exactly
+(monotonic in raw amplitude: 0.05 > 0.04 > 0.03 > 0.02 > 0.01 -> Alpha
+762 > 367 > 121 > 84 > 32).
+
+**UI (`ui/layout.py`, `ui/module_relative_value.py`):** `module-relval`
+restructured into an internal `dcc.Tabs` (`relval-subtabs`) with two
+sub-tabs, per the project owner's explicit preference over an
+ever-growing single-page stack: "SKANER I ANALIZA PARY" (the existing
+scan + manual-pair-analysis content, unchanged) and "ANALIZA WSTECZNA
+(BATCH)" (new). The new sub-tab: a minimum-gates-passed filter (dropdown,
+default 2/4), a "URUCHOM ANALIZĘ WSTECZNĄ" button that re-fetches +
+re-scans the universe and runs the full batch backtest (self-contained,
+not reusing a cross-callback price cache -- simpler, avoids Store-size
+concerns, and the marginal re-scan cost is small relative to the batch
+backtest itself, which is already a multi-minute operation for a large
+universe), a correlation summary (horizontal bar per candidate variable,
+colored green/red by sign, width by magnitude) reading directly from
+`compute_correlations`'s output, and a results table sorted by actual
+Alpha with a "Sektor" column (Same/Different) for the sector-match
+hypothesis.
+
+Verified: the full pipeline was tested end-to-end against a synthetic
+scenario deliberately constructed to reproduce the project owner's
+real-world observation -- a "MEMORY"-style pair (weaker formal
+cointegration, large spread amplitude, strong shared growth trend, same
+sector) vs. a "STABLE"-style pair (textbook-strength cointegration, small
+spread amplitude). Result: the weaker-gates pair (3/4) produced
+Alpha +705.2pp; the fully-qualifying pair (4/4) produced only
++16.3pp -- directly reproducing the reported phenomenon, confirming the
+tool surfaces exactly the effect it was built to investigate. Correlation
+bar rendering confirmed structurally correct (8 candidate variables
+rendered, though with only 2 pairs in this specific test every correlation
+is mathematically forced to exactly +-1.0 -- expected behavior for n=2,
+not a bug, a real universe scan with many pairs will show a genuine
+spread of values). Full app integration recheck (53/53 callbacks -- 52
+prior + 1 net-new here), solver regression rerun (identical weights to
+every prior check in this project's history).
+
+---
+
+### 7d. 2Y Drift Gate Removed; Relative Alpha and Composite Ranking Redefined (complete)
+
+Follow-up to 7c: the project owner reviewed real batch-attribution output
+(screenshot) and confirmed empirically what was suspected -- "Drift Diff 2Y
+[pp]" showed essentially zero correlation with actual backtest Alpha
+(+0.021, the weakest of every candidate variable). Root cause, now
+understood precisely: the metric was a single POINT-IN-TIME comparison
+(today vs. exactly 2 years ago) in ABSOLUTE percentage-point units, applied
+across a universe where individual stocks' 5-year total returns range from
+roughly +400% to +2500% -- two price paths that moved together closely the
+entire time can still show a huge point-to-point percentage-point gap
+purely because one stock's absolute compounding scale happened to be much
+larger, which has nothing to do with whether the paths actually diverged
+from each other.
+
+**Removed entirely, not just de-weighted:** `_drift_diff_2y`,
+`CALENDAR_DAYS_2Y`, `DEFAULT_MAX_DRIFT_PP`, the `max_drift_pp` parameter
+threaded through `evaluate_pair_diagnostics`/`scan_universe_diagnostics`/
+`find_cointegrated_pairs`, and the cheap drift PRE-FILTER in
+`scan_universe_diagnostics` (previously a hard exclusion before the
+expensive cointegration test even ran). **Formal gate count dropped from 4
+to 3** (cointegration p-value, half-life, hedge-ratio sanity) everywhere:
+`gates_passed`/`all_passed` semantics, the "X / N" UI labels (now "/ 3"),
+and the batch tab's minimum-gates dropdown (now offers 1-3, not 1-4).
+Confirmed explicit consequence, not an oversight: universe scans are now
+slower on a large universe (no early-exit at all on any gate before the
+full cointegration test runs) -- an accepted tradeoff, since the removed
+gate wasn't actually predictive of anything worth optimizing scan speed
+around.
+
+**New function, `avg_relative_divergence_5y(prices_a, prices_b)`:**
+rebases both price paths to 100 at the start of the (however long) window
+provided, then averages `|ln(norm_A(t)) - ln(norm_B(t))|` across EVERY day
+in that window (not one point-in-time snapshot). Symmetric (order of A/B
+doesn't matter) and expressed in the same log-price units as the
+cointegration spread and hedge-ratio regression. Reported PURELY as an
+informational field in `evaluate_pair_diagnostics`'s output (does not
+participate in `gates_passed` at all) -- confirmed explicit design: "chcę
+najpierw zobaczyć jaką będzie miał korelację, później zobaczymy może
+ustalimy jakiś sztywny próg" (see this variable's own correlation reading
+once real batch runs accumulate, before considering a fixed threshold).
+Verified with four targeted numeric tests: exactly 0 for two identical
+paths; exactly matches a known analytically-derived value (a linear
+log-ratio ramp from 0 to X averages to X/2, confirmed to 1e-9); symmetric
+under swapping A and B; and invariant to multiplying both price series by
+a constant scale factor (confirmed identical to 1e-9) -- directly verifies
+this measures PATH divergence, not absolute price-level differences,
+which is exactly what the removed metric got wrong.
+
+**"Relative Alpha [%]" redefined** (`run_backtest_batch`, was "Alpha vs
+Benchmark [pp]"): now divides by `max(final_benchmark, final_100a,
+final_100b)` -- the best of the three NON-dynamic curves, whichever that
+happens to be -- rather than always dividing by the passive 50/50
+benchmark specifically. The underlying ratio-based formula itself was
+already correctly relative (not a raw arithmetic percentage-point
+difference, despite the old "[pp]" label suggesting otherwise) -- verified
+against the project owner's own two worked examples before writing any
+code: (2000/1500 - 1)*100 = 33.3% and (500/335 - 1)*100 = 49.25% (≈"50%"),
+both confirmed to match exactly. Only the denominator changed, plus a
+clearer "[%]" label replacing the misleading "[pp]" one.
+
+**New "Composite Score"** (confirmed ranking formula): 50% each of
+"Relative Alpha [%]" and "Days In Lead [%]" (already existing from 7b),
+combined via PERCENTILE RANK (`pandas.Series.rank(pct=True)`) rather than
+a raw weighted sum -- a deliberate choice, not arbitrary: Alpha and Days
+In Lead live on very different numeric scales (Alpha can range from
+roughly -90% to well over +1000%; Days In Lead is bounded to [0, 100]), so
+a raw `0.5*Alpha + 0.5*DaysInLead` would be completely dominated by
+whichever metric has the larger range in a given batch. Rank-based
+combination is scale-invariant: each half of the score reflects the
+pair's RELATIVE STANDING within that batch, not its raw magnitude, so both
+genuinely carry equal weight. Verified by manually recomputing the
+percentile ranks and composite score outside the function and confirming
+an exact match against `run_backtest_batch`'s own output. Batch results
+now sort by Composite Score descending, not by Alpha alone.
+
+**Full pipeline re-verified end to end** with a targeted scenario
+reproducing the exact failure mode that motivated this whole change: a
+pair with drastically different 5-year absolute returns (+141% vs. +67%, a
+74pp gap -- which WOULD have been hard-rejected by the old 35pp drift
+gate before ever reaching the cointegration test) now correctly appears in
+results (2/3 gates passed) and shows strong actual performance
+(Relative Alpha +451.8%, Days In Lead 96.8%) -- directly confirming the
+fix addresses the real-world case the project owner observed with
+memory-sector pairs being silently excluded despite strong backtest
+potential. Full app integration recheck (53/53 callbacks -- same count,
+this was a redefinition of existing callbacks' internals, not new
+callback registrations), solver regression rerun (identical weights to
+every prior check in this project's history), and a project-wide grep
+confirming zero remaining references to any removed drift-gate identifier
+(`drift_diff_pp`, `drift_pass`, `Drift Diff 2Y`, `max_drift_pp`) or the old
+Alpha column name (`Alpha vs Benchmark [pp]`) anywhere in `engine/` or `ui/`.
+
+---
+
+## 8. Implementation Status & Development Roadmap
 
 ### Currently Implemented in Codebase:
 * [x] Ingestion pipeline with automated yfinance handling (MultiIndex defensive normalization).
@@ -1129,7 +1641,7 @@ project's actual ~40-ticker universe.
 
 ---
 
-## 7. Execution Instructions
+## 9. Execution Instructions
 
 ### Prerequisites:
 * Python `>= 3.10`
