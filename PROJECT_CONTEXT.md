@@ -1610,6 +1610,375 @@ Alpha column name (`Alpha vs Benchmark [pp]`) anywhere in `engine/` or `ui/`.
 
 ---
 
+### 7e. Walk-Forward Out-of-Sample Validation — third Relative Value sub-tab (complete)
+
+Confirmed motivation (2026-09-08, fifth follow-up): everything built for
+Relative Value so far (screening, batch attribution) was purely
+IN-SAMPLE -- a pair was discovered and immediately evaluated on the SAME
+data used to find it, which cannot distinguish a genuine, persistent
+relationship from a pattern that happened to fit one specific historical
+window. This adds a walk-forward split: 5 years TRAIN + 1 year TEST
+(confirmed lengths, chosen to align with the project's existing
+~21-trading-day/monthly rebalance cadence -- a 1-year OOS window gives
+roughly 12 rebalance cycles' worth of validation).
+
+**Design, confirmed point by point:**
+1. **Split boundary is a CALENDAR date**, not a row-count offset --
+   `prices.index[-1] - pd.DateOffset(years=test_years)` -- deliberately
+   reusing the exact lesson from the earlier 2Y-drift row-count bug (a
+   fixed row-count split lands on a different calendar date depending on
+   how many "phantom" ffilled rows a mixed-exchange batch fetch produces).
+2. **Hedge ratio and every gate diagnostic are computed ONLY from TRAIN**
+   (`evaluate_pair_diagnostics` called on the TRAIN slice alone) -- the
+   whole point of the exercise fails if the "unseen" test year is allowed
+   to influence which parameters get used to evaluate it.
+3. **The backtest itself runs across the FULL window in one pass** (not
+   simulated separately per half) using the TRAIN-derived hedge ratio
+   throughout, so the rolling Z-score at the start of the TEST year still
+   has its full lookback of genuine preceding data -- exactly like a live
+   system crossing that date would experience, not an artificially cold start.
+4. **The resulting single equity curve is then split into IS and OOS
+   segments**, with the OOS segment REBASED to 100 at the boundary (each
+   curve divided by its own value on that day) -- isolates what happened
+   ONLY in the held-out year, so a pair that was merely lucky in-sample
+   can't look artificially good out-of-sample purely from carried-forward
+   compounding.
+5. **Composite Score comparison, confirmed exact request** ("chcę różnicę
+   score 50/50 zobaczyć jak się zmienił"): "Composite Score (IS)" and
+   "Composite Score (OOS)" are each computed via percentile-ranking every
+   candidate pair in the batch on ITS OWN segment's Alpha/Days-In-Lead --
+   two INDEPENDENT rankings, not one reused for both -- so "Composite
+   Score Δ (OOS - IS)" answers "did this pair's relative standing among
+   its peers hold up," not just whether its raw numbers moved. No fixed
+   pass/fail threshold was added (explicitly declined in favor of showing
+   the actual delta) -- the project owner can eyeball which pairs held up
+   directly from the sorted table.
+6. **Confirmed addition** ("możesz dodać"): a separate statistical
+   re-test of cointegration on the OOS price slice alone, with hedge ratio
+   still FIXED at its train-derived value. Because gamma is a known
+   constant here rather than something being jointly estimated from the
+   tested data, the methodologically correct test is a PLAIN Augmented
+   Dickey-Fuller test on the resulting fixed-gamma spread
+   (`statsmodels.tsa.stattools.adfuller`), NOT the two-step Engle-Granger
+   `coint()` used for the original screen -- `coint()`'s MacKinnon-adjusted
+   critical values specifically correct for jointly estimating the
+   regression coefficient on the same data under test, which does not
+   apply once gamma is already fixed. "Gates Passed (OOS)" is therefore
+   scored out of 2 (cointegration + half-life), not 3 -- hedge-ratio
+   sanity isn't re-tested since it's unchanged by construction.
+7. **Data source**: self-contained, matching the established pattern for
+   the other two sub-tabs -- fetches 6Y fresh (5Y train + 1Y test) rather
+   than reusing a cross-callback cache (owner's call: "jak uważasz będzie
+   lepiej" -- consistency with the existing pattern was judged better than
+   introducing a new caching mechanism for one tab).
+
+**New engine function, `run_walk_forward_validation(prices_df, pairs_df,
+test_years, ...)`** in `engine/pairs.py`. A real, if minor, forward-compatibility
+fix made in passing: `statsmodels.tsa.stattools.adfuller` emitted a
+`FutureWarning` about its return-value shape changing in a future release
+-- pinned explicitly via `result_object=False` to silence it and lock in
+the current tuple-based behavior this code already expects, rather than
+letting a future statsmodels upgrade silently change behavior underneath it.
+
+**UI**: third `dcc.Tab` ("WALIDACJA OUT-OF-SAMPLE") in the Relative Value
+module, alongside a minimum-gates filter (evaluated on the full window, to
+choose which candidates are worth walk-forward testing at all) and a
+test-period-length input (default 1 year, confirmed). Results table sorted
+by Composite Score (OOS) descending, with the Δ column colored
+green/red by sign for quick visual scanning.
+
+Verified with two deliberately contrasting synthetic scenarios, run
+through the full UI callback (not just the engine function directly): a
+GENUINELY persistent pair (same underlying cointegration dynamics for the
+entire 6-year window) and a pair whose relationship BREAKS DOWN precisely
+at the train/test boundary (independent, diverging trends injected only in
+the final year). Result: the persistent pair correctly ranks best
+out-of-sample (Composite Score Δ +0.083, OOS score 1.000 -- the top of the
+batch); the breaking pair, despite a PERFECT 3/3 gates in training (it
+looked completely qualified in-sample), shows a clearly NEGATIVE delta
+(-0.333, OOS score dropping to 0.583) -- directly demonstrating the tool
+catches exactly the failure mode it was built to catch: a pair that looks
+great purely because it was evaluated on the same data used to find it.
+Full app integration recheck (54/54 callbacks -- 53 prior + 1 new), solver
+regression rerun (identical weights to every prior check in this
+project's history).
+
+---
+
+### 7f. Monthly Rolling Walk-Forward — production-mechanism prototype (complete)
+
+Confirmed direction change (2026-09-08, sixth follow-up): the project
+owner explicitly rejected cointegration p-value as something that matters
+at all -- "nie obchodzi mnie jaka jest p-value... interesuje mnie
+najwyzszy score i w jakim horyzoncie bedzie sie to utrzymywalo
+STATYSTYCZNIE." This directly follows from Etap 7c's own finding
+(P-Value correlated NEGATIVELY with actual backtest Alpha) -- continuing
+to treat p-value as central after finding that would have been
+inconsistent. From this point on, a pair's edge is judged purely by
+whether ITS OWN realized performance is statistically distinguishable
+from zero, not by any cointegration "quality" measure. hedge_ratio is
+kept only as the technical device needed to construct the spread/Z-score
+-- it carries no claim about statistical validity on its own anymore.
+
+**This is a genuinely different mechanism from everything built so far**,
+not another variant of the discrete daily threshold-switching backtest
+(`simulate_pair_strategy`): a smooth, bounded weight tilt
+(`weight_A = 0.5 + 0.5*theta*tanh(-Z)`), checked ONCE per ~21-session
+rebalance cycle and held with zero within-month reaction -- a direct
+prototype of the eventual production mu_i-nudge mechanism, expressed here
+in weight-space (since this is an isolated 2-asset diagnostic, with no
+portfolio-level mu_i to nudge) rather than the literal production
+mechanism itself.
+
+**Why the Z-score baseline window is 252 sessions, not 63** (confirmed,
+explained to the project owner before coding): (1) both the mean and std
+used to Z-score the spread are themselves noisy ESTIMATES, with standard
+error scaling as `1/sqrt(n)` -- a monthly-checked signal gets no chance to
+average that estimation noise out between checks the way a daily-reacting
+system would, so the reference point needs to be more stable to begin
+with; (2) this project's own half-life gate tolerates reversion cycles up
+to 63 sessions -- using a 63-session window to estimate the "baseline"
+risks spanning LESS than one full cycle, contaminating the estimate with
+wherever in the oscillation the window happens to sit rather than its true
+center. 252 sessions comfortably spans several full cycles even at the
+slow end of the tolerated range.
+
+**Two real, instructive mistakes found and fixed while verifying this
+function** (both worth recording in full, since they're genuine lessons
+about the domain, not just fixed typos):
+
+1. **A real bug**: the "current spread" at each month's start was computed
+   as `log(P_A) - hedge_ratio*log(P_B)`, OMITTING the regression intercept
+   (alpha) that `_hedge_ratio_and_spread` DOES include when constructing
+   the baseline spread series it returns. This created a constant
+   systematic offset between the "current" point and its own baseline,
+   producing absurd, persistently saturated Z-scores (+6 to +14, pinned at
+   the tanh saturation bound every single month) -- caught immediately
+   because the resulting weights never varied. Fixed by using the
+   baseline spread series' own last value (`train_spread.iloc[-1]`)
+   directly instead of recomputing it separately with a different,
+   inconsistent formula.
+2. **A test-construction mistake, not a code bug, but informative**: an
+   initial synthetic "genuinely persistent" test pair used an AR(1) spread
+   with phi=0.983 (nominal half-life ~40 sessions) that turned out to sit
+   too close to a unit root -- such a process's UNCONDITIONAL variance
+   grows large and its short-run trajectory can drift far from any
+   252-day baseline for extended stretches, since near-unit-root
+   processes take many multiples of their own half-life to reveal a
+   stable long-run center. This reproduced the same saturated-Z-score
+   symptom as bug #1, but for a different, purely statistical reason,
+   distinguished by direct diagnostic comparison against a hand-computed
+   Z-score. A second test attempt used a smooth, deterministic
+   sinusoidal spread, which turned out to be an inappropriate model
+   entirely: a pure sine wave's LEVEL and its DERIVATIVE (which is what
+   determines the next period's forward return) are exactly 90-degrees
+   phase-shifted and therefore have ZERO correlation by construction
+   (confirmed numerically to machine precision) -- unlike a true AR(1)
+   mean-reverting process, where the level directly determines the
+   expected direction of the next move. Both attempts were abandoned in
+   favor of a properly-scaled AR(1) process (phi=0.90-0.95, an
+   unconditional variance kept moderate by choice of sigma), which
+   correctly validated the mechanism.
+
+**Verification, once a proper test model was used**: a direct diagnostic
+(bypassing the theta/tanh weight formula entirely) confirmed Z-score at
+month start correlates with the REALIZED next-month return differential
+`(ret_A - ret_B)` at +0.734 for a well-scaled AR(1) pair -- the core
+signal is directionally sound. The full 12-month AGGREGATE t-statistic
+for that same single random realization did not reach conventional
+significance (t=0.91, p=0.38) -- confirmed, on inspection, to be an
+honest consequence of small-sample randomness (only 2 of the 12
+non-overlapping months happened to show a large Z-score in that specific
+draw, diluting the aggregate with 10 near-zero-signal months) and the
+deliberately conservative `theta=0.15` (a gentle tilt, per the project's
+Long-Only, non-arbitrage philosophy), not a flaw in the mechanism -- this
+is precisely the caveat the t-statistic is supposed to surface: a
+genuinely-present signal is not automatically the same as slam-dunk
+statistical proof at n=12. The batch UI status message says this
+explicitly ("przy n=12 to surowy próg -- traktuj jako wstępny filtr, nie
+ostateczny dowód").
+
+**New engine functions**: `simulate_monthly_walkforward` (one pair,
+returns per-month details plus mean/std/t-stat/p-value across the 12
+months) and `run_monthly_walkforward_batch` (runs it across every
+candidate pair, sorted by `|t-statistic|` descending -- confirmed priority:
+the t-statistic is the single number that combines both the SIZE of a
+pair's average edge and the CONSISTENCY of it, which is exactly "highest
+score, over what horizon does it hold up statistically").
+
+**UI**: fourth `dcc.Tab` ("TRWAŁOŚĆ MIESIĘCZNA (t-TEST)") in the Relative
+Value module, with a minimum-gates filter (coarse candidate selection only
+-- p-value plays no further role), a `theta` input (default 0.15,
+adjustable for experimentation as explicitly invited), and a results table
+sorted by t-statistic with p<0.05 rows highlighted.
+
+Verified end to end through the full UI callback (not just the engine
+functions directly) on synthetic data; full app integration recheck
+(55/55 callbacks -- 54 prior + 1 new), solver regression rerun (identical
+weights to every prior check in this project's history).
+
+**Explicitly NOT yet done** (per the project owner's own sequencing,
+confirmed this same follow-up): the actual pair-assignment mechanism for
+wiring this into the Stage 1 SLSQP solver -- "kazda spolka moze byc
+przydzielona tylko do jednej pary ale to na pozniej, najpierw musze uzyskac
+taki wynik ktory da mi mozliwosc potwierdzenia ze obliczenia sprawdzaja sie."
+This tab produces the confirmation tool; solver wiring is an explicit,
+separate, later step.
+
+---
+
+### 7g. Chart-first IS/Trailing Score view; p-value fully removed from this tab (complete)
+
+Confirmed frustration and redirect (2026-09-08, seventh follow-up): the
+project owner found the Etap 7e OOS table (screenshot reviewed) unreadable
+as a wall of numbers with no visual -- "kompletnie nie wiem na co mam sie
+patrzec... nie ma zadnych wykresow". Also confirmed: cointegration p-value
+is no longer trusted as informative at all here ("nie wiem czy p-value
+jest tu w ogole przydatne... ciagle gdzies je wrzucasz") -- it has been
+removed ENTIRELY from this tab's chart and table (it still exists
+elsewhere in the module, e.g. the original scan table, where it remains a
+coarse candidate filter, just not a headline metric here).
+
+**The project owner's own proposed metric, now implemented**: take a
+pair's Composite Score computed on the 5-year IS/training window (already
+existing -- reused directly from `run_walk_forward_validation`'s
+"Composite Score (IS)", no new compute needed), and separately compute a
+TRAILING 12-month analysis specifically using the theta/monthly production
+mechanism (confirmed: "teraz tylko trzeba to zaimplementowac dla strategii
+z theta") to get both a mean score AND its standard deviation -- directly
+the two numbers requested ("ranking ze scorem i odchyleniem tego score").
+The project owner's own empirical observation from the prior table (pairs
+scoring above ~0.8 in BOTH windows tended to beat the best single-stock
+alternative) is now the organizing principle of this view, made visual
+rather than left as something to notice buried in a dense table.
+
+**New engine function, `run_theta_trailing_stability`**: for every
+candidate pair, runs `simulate_monthly_walkforward` to get its trailing
+12 raw monthly alphas, then -- the key methodological step -- for EACH of
+those 12 months independently, percentile-ranks EVERY candidate pair's
+alpha for THAT SPECIFIC MONTH against every other candidate pair (not
+each pair scored against its own history in isolation). This gives each
+pair a 12-point time series of cross-sectional "monthly scores" (0-1,
+same convention as Composite Score elsewhere); "Trailing Score" is the
+mean of that series, "Trailing Score (std)" is its standard deviation --
+exactly "score i odchylenie tego score", now specifically for the theta
+mechanism. Pairs are included only with a COMPLETE 12-month history (a
+fair monthly cross-sectional ranking needs every included pair to have a
+value for every compared month).
+
+Verified on three deliberately different synthetic pairs (a moderate,
+well-scaled AR(1) "CONSISTENT" pair; a high-amplitude "ERRATIC" pair;
+a low-amplitude "WEAK" pair): the erratic pair scored both the highest
+mean AND the highest std (matches Etap 7f's own finding that raw
+amplitude drives captured alpha, for better or worse), the weak pair
+scored both the lowest mean and a comparatively tighter std -- the
+function differentiates pairs sensibly along both dimensions, not just
+one.
+
+**Combining two DIFFERENT mechanisms, made explicit rather than silently
+mixed**: "IS Score" (x-axis) comes from the discrete threshold-switching
+backtest over the full 5-year training window; "Trailing Score" (y-axis)
+comes from the theta/monthly mechanism over the trailing 12 months. This
+is a deliberate, documented choice, not an oversight -- computing a
+theta-based IS score over the training window would itself require
+several YEARS of data preceding that training window (each of its own
+sub-months would need its own 5-year lookback), which isn't practical
+given this project's existing 6-year fetch. The two axes answer
+genuinely different, complementary questions ("was this pair generally
+good historically, by any reasonable method" vs. "does the actual
+production-candidate mechanism show a stable, consistently well-ranked
+edge recently") rather than pretending to be the same measurement twice.
+
+**UI**: the fourth sub-tab ("TRWAŁOŚĆ MIESIĘCZNA (SCORE + WYKRES)") is now
+chart-first. An error-bar scatter (`plotly.graph_objects`, matching the
+project's existing chart conventions) plots IS Score vs. Trailing Score
+(mean) with error bars showing Trailing Score (std), reference lines at
+the empirically-observed 0.8 threshold on both axes, and a distinct
+marker color for pairs clearing both -- the pattern the project owner
+described ("wezmiesz spolki ktore w obu przypadkach maja powyzej 0.8
+score") is now something to SEE (upper-right cluster with short error
+bars) rather than something to notice by scanning columns. A detail table
+below the chart carries the same three numbers (IS Score, Trailing Score
+mean, Trailing Score std) for sorting/filtering -- with NO p-value column
+anywhere in this tab.
+
+Verified end to end through the full UI callback (not just engine
+functions directly) on synthetic data -- confirmed the merged
+DataFrame, the chart's trace count and hover data, and the table's sort
+order all behave correctly together. Full app integration recheck (55/55
+callbacks -- same count, this modifies an existing callback's Outputs/body
+rather than registering a new one), solver regression rerun (identical
+weights to every prior check in this project's history).
+
+---
+
+### 7h. Per-pair theta chart in Tab 1 (complete) — the small change requested first
+
+Confirmed feedback (2026-09-08, eighth follow-up): the Etap 7g
+cross-sectional scatter (547 real pairs at once) looked like pure
+randomness to the project owner -- correctly so, since a scatter of
+hundreds of points conveys population-level structure, not what any ONE
+pair's mechanism actually does over time. Explicit request, taken as a
+deliberately small first step before revisiting whether 12 months is the
+right trailing window at all ("zacznijmy od tej małej zmiany a później
+się zastanowimy"): add a per-pair chart of the theta/monthly mechanism
+(not the discrete 80/20-style one) to the existing single-pair analysis
+section in Tab 1 ("Skaner i Analiza Pary").
+
+**New engine function, `simulate_monthly_theta_curve`**: the daily-resolution
+visual counterpart to `simulate_monthly_walkforward` (which only returns
+12 summary numbers) -- same underlying mechanism (weight tilted via
+`0.5 + 0.5*theta*tanh(-Z)`, re-evaluated once per ~21-session month using
+a 252-session baseline from the preceding 5-year window), but returning a
+full day-by-day equity curve across the whole test window so a single
+pair's actual behavior can be plotted, the same way the discrete
+threshold chart already lets a person inspect one pair. Physical-share
+execution (same anti-"Shannon's Demon" approach as `simulate_pair_strategy`):
+shares are only re-set at each MONTH boundary, drifting naturally with
+prices in between.
+
+**A test-threshold mistake caught and corrected while verifying this
+(not a code bug)**: an initial sanity check asserted weight changes
+within a month must stay below an arbitrary absolute value (0.01), which
+failed at a measured 0.0138 -- investigation confirmed this is CORRECT,
+expected behavior, not a bug: with share counts frozen for the whole
+month, the realized weight naturally drifts as each stock's own price
+moves, exactly as intended (that drift is what avoiding Shannon's Demon
+looks like). The test was rebuilt as a RELATIVE comparison instead of an
+arbitrary absolute threshold: mean day-to-day weight change at month
+boundaries (where the real rebalance happens) was confirmed to be ~18x
+larger than mean day-to-day change within months (natural price drift
+only) -- the correct qualitative signature, verified quantitatively
+rather than eyeballed. Also verified: no Shannon's Demon (50/50 benchmark
+stays within the two single-stock curves' corridor), and exact numerical
+agreement between this function's per-month weights and
+`simulate_monthly_walkforward`'s own weights for the same pair and
+parameters (both derive from the identical calculation, cross-checked
+independently rather than assumed).
+
+**UI**: a new panel directly below the existing threshold-based chart in
+Tab 1's "Analiza Wybranej Pary" section, for the SAME currently-selected
+pair (reuses `store-relval-pair-data`, no extra fetch) -- a 2-panel chart
+(equity curves on top; weight-in-portfolio below, annotated with vertical
+dotted lines at each month boundary) with its own `theta` and
+"liczba miesięcy" inputs, independent of the discrete mechanism's
+entry/exit/favour-weight sliders since this is a structurally different
+mechanism. Verified end to end (placeholder with no pair selected;
+full chart with correct trace names once a pair is analyzed; changing
+theta produces a measurably different curve).
+
+Full app integration recheck (56/56 callbacks -- 55 prior + 1 new), solver
+regression rerun (identical weights to every prior check in this
+project's history).
+
+**Explicitly deferred, per the project owner's own sequencing**: whether
+to shorten the trailing window from 12 months to 2-3 (since each month
+already gets a fresh 5-year retrain regardless) is an open question to
+revisit once this per-pair visual has been used to build intuition first
+-- not decided or changed in this pass.
+
+---
+
 ## 8. Implementation Status & Development Roadmap
 
 ### Currently Implemented in Codebase:

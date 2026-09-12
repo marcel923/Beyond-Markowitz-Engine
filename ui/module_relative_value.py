@@ -44,7 +44,8 @@ from data import universe_store as uni
 from data.market_data import fetch_universe_prices
 from engine.pairs import (
     scan_universe_diagnostics, evaluate_pair_diagnostics, simulate_pair_strategy,
-    run_backtest_batch, compute_correlations,
+    run_backtest_batch, compute_correlations, run_walk_forward_validation,
+    run_theta_trailing_stability, simulate_monthly_theta_curve,
 )
 
 
@@ -295,6 +296,78 @@ def render_strategy_chart(pair_data, entry_z, exit_z, favour_weight):
 
 
 # ---------------------------------------------------------------------------
+# Wykres theta dla TEJ SAMEJ pary -- mechanizm miesieczny, nie progowy.
+# Confirmed 2026-09-08 (osmy follow-up): zbiorczy wykres w zakladce
+# "Trwalosc Miesieczna" wygladal jak czysty szum na setkach par naraz --
+# ta wersja pozwala zobaczyc DOKLADNIE JEDNA pare, zeby zbudowac intuicje,
+# zanim wracamy do pytania czy 12 miesiecy to dobra dlugosc okna.
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("relval-theta-chart", "figure"),
+    Input("store-relval-pair-data", "data"),
+    Input("relval-theta-input", "value"), Input("relval-theta-nmonths", "value"),
+    prevent_initial_call=True,
+)
+def render_theta_chart(pair_data, theta, n_months):
+    theta = theta or 0.15
+    n_months = int(n_months) if n_months else 12
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+        row_heights=[0.65, 0.35],
+        subplot_titles=["Wyniki kapitałowe (Baza = 100)", "Waga w portfelu (skok raz na miesiąc)"],
+    )
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        margin=dict(l=50, r=30, t=40, b=30), font_family=THEME["font"],
+        legend=dict(orientation="h", y=1.08, font=dict(size=9, color=THEME["text_dim"])),
+        height=620,
+    )
+    for r in (1, 2):
+        fig.update_xaxes(showgrid=False, tickfont=dict(color=THEME["text_dim"], size=10), row=r, col=1)
+        fig.update_yaxes(showgrid=True, gridcolor=THEME["border"], tickfont=dict(color=THEME["text_dim"], size=10), row=r, col=1)
+
+    if not pair_data:
+        fig.add_annotation(text="Wybierz parę i kliknij ANALIZUJ PARĘ", showarrow=False,
+                            font=dict(size=12, color=THEME["text_dim"]), xref="paper", yref="paper", x=0.5, y=0.5)
+        return fig
+
+    dates = pair_data["dates"]
+    pa = pd.Series(pair_data["prices_a"], index=pd.to_datetime(dates))
+    pb = pd.Series(pair_data["prices_b"], index=pd.to_datetime(dates))
+    ta, tb = pair_data["ticker_a"], pair_data["ticker_b"]
+
+    curve = simulate_monthly_theta_curve(pa, pb, theta=theta, n_months=n_months)
+    if not curve["dates"]:
+        fig.add_annotation(text="Za mało danych na tyle miesięcy (potrzeba 5 lat treningu + tyle miesięcy testu).", showarrow=False,
+                            font=dict(size=12, color=THEME["text_dim"]), xref="paper", yref="paper", x=0.5, y=0.5)
+        return fig
+
+    d = curve["dates"]
+    fig.add_trace(go.Scatter(x=d, y=curve["equity_strategy"], name=f"Theta Nudge (θ={theta})",
+                              line=dict(color=THEME["pos"], width=2.4)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=d, y=curve["equity_benchmark"], name="Pasywny Koszyk 50/50",
+                              line=dict(color=THEME["text_white"], width=1.5, dash="dash")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=d, y=curve["equity_100a"], name=f"100% {ta}",
+                              line=dict(color=THEME["warn"], width=1.2, dash="dot")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=d, y=curve["equity_100b"], name=f"100% {tb}",
+                              line=dict(color=THEME["accent"], width=1.2, dash="dot")), row=1, col=1)
+
+    for mb in curve["month_boundaries"]:
+        fig.add_vline(x=mb["date"], line=dict(color=THEME["border_strong"], width=0.6, dash="dot"), row=1, col=1)
+
+    weight_a_pct = [w * 100 for w in curve["weight_a"]]
+    weight_b_pct = [100 - w for w in weight_a_pct]
+    fig.add_trace(go.Scatter(x=d, y=weight_a_pct, name=f"{ta} Waga %", line=dict(color=THEME["warn"], width=1.2), showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=d, y=weight_b_pct, name=f"{tb} Waga %", line=dict(color=THEME["accent"], width=1.2), showlegend=False), row=2, col=1)
+    fig.add_hline(y=50, row=2, col=1, line=dict(color=THEME["border_strong"], dash="dash"))
+    fig.update_yaxes(range=[30, 70], row=2, col=1)
+
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Sekcja 3 (druga zakladka modulu): Backtest Attribution -- pelny backtest
 # dla KAZDEJ pary z ostatniego skanu (nie tylko 4/4), ranking po
 # RZECZYWISTYM wyniku (Alpha vs benchmark), plus analiza korelacji: co
@@ -458,3 +531,232 @@ def run_batch_attribution(_n_clicks, min_gates, entry_z, exit_z, favour_weight):
         ),
     ] + ([failed_note] if failed_note else []))
     return table, corr_display, scatter_fig, status
+
+
+# ---------------------------------------------------------------------------
+# Sekcja 4 (trzecia zakladka modulu): Walk-Forward Out-of-Sample Validation --
+# sprawdza, czy przewaga wykryta w danych treningowych utrzymuje sie w
+# swiezym, nietknietym roku, ktory nigdy nie wplywal na dobor hedge ratio
+# ani bramek tej pary.
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("relval-oos-table", "children"),
+    Output("relval-oos-status", "children"),
+    Input("btn-relval-oos-run", "n_clicks"),
+    State("relval-oos-min-gates", "value"), State("relval-oos-test-years", "value"),
+    State("relval-slider-entry-z", "value"), State("relval-slider-exit-z", "value"), State("relval-slider-favour-weight", "value"),
+    prevent_initial_call=True,
+)
+def run_oos_validation(_n_clicks, min_gates, test_years, entry_z, exit_z, favour_weight):
+    """
+    Self-contained (fetches 6Y of universe data fresh -- 5Y train + 1Y test
+    by default), matching the same pattern as the other two sub-tabs.
+    Candidate pairs come from a scan on the FULL 6Y window (filtered by
+    min_gates) purely to decide WHICH pairs are worth walk-forward testing
+    at all -- the actual hedge ratio / gate diagnostics used for the
+    validation itself are recomputed from TRAIN data only, inside
+    engine.pairs.run_walk_forward_validation (see that function's
+    docstring for why re-using a diagnostic computed on the full window,
+    including the test year, would defeat the purpose).
+    """
+    entry_z = entry_z or 1.5
+    exit_z = exit_z if exit_z is not None else 0.25
+    favour_weight = favour_weight or 0.80
+    test_years = test_years or 1.0
+
+    tickers = [c["Ticker"] for c in uni.list_companies()]
+    if len(tickers) < 2:
+        return html.Div(), html.Div("Uniwersum ma mniej niż 2 spółki.", style={"color": THEME["neg"]})
+
+    prices_df, valid_tickers = fetch_universe_prices(tickers, period="6y")
+    failed_note = _failed_tickers_note(tickers, valid_tickers)
+    if prices_df.empty or len(valid_tickers) < 2:
+        msgs = [html.Div("Nie udało się pobrać danych cenowych dla uniwersum.", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
+        return html.Div(), html.Div(msgs)
+
+    full_scan = scan_universe_diagnostics(prices_df, tickers=valid_tickers)
+    candidate_pairs = full_scan[full_scan["Gates Passed"] >= min_gates]
+    if candidate_pairs.empty:
+        msgs = [html.Div(f"Żadna para nie ma co najmniej {min_gates}/3 bramek na pełnym 6-letnim oknie.", style={"color": THEME["warn"]})] + ([failed_note] if failed_note else [])
+        return html.Div(), html.Div(msgs)
+
+    validation = run_walk_forward_validation(prices_df, candidate_pairs, test_years=test_years,
+                                              entry_z=entry_z, exit_z=exit_z, favour_weight=favour_weight)
+    if validation.empty:
+        msgs = [html.Div("Żadna para nie miała wystarczająco danych treningowych i testowych (potrzeba min. ~2Y treningu + ~1 kwartał testu).", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
+        return html.Div(), html.Div(msgs)
+
+    table = dash_table.DataTable(
+        columns=[
+            {"name": "Spółka A", "id": "Ticker A"}, {"name": "Spółka B", "id": "Ticker B"},
+            {"name": "Δ Composite (OOS-IS)", "id": "Composite Score Δ (OOS - IS)", "type": "numeric", "format": {"specifier": "+.3f"}},
+            {"name": "Composite (IS)", "id": "Composite Score (IS)", "type": "numeric", "format": {"specifier": ".3f"}},
+            {"name": "Composite (OOS)", "id": "Composite Score (OOS)", "type": "numeric", "format": {"specifier": ".3f"}},
+            {"name": "Alpha IS [%]", "id": "Relative Alpha IS [%]", "type": "numeric", "format": {"specifier": "+.1f"}},
+            {"name": "Alpha OOS [%]", "id": "Relative Alpha OOS [%]", "type": "numeric", "format": {"specifier": "+.1f"}},
+            {"name": "Na prowadz. IS [%]", "id": "Days In Lead IS [%]", "type": "numeric", "format": {"specifier": ".1f"}},
+            {"name": "Na prowadz. OOS [%]", "id": "Days In Lead OOS [%]", "type": "numeric", "format": {"specifier": ".1f"}},
+            {"name": "Bramki (Trening)", "id": "Gates Passed (Train)"},
+            {"name": "Bramki (OOS, 0-2)", "id": "Gates Passed (OOS)"},
+            {"name": "p-value (Trening)", "id": "P-Value (Train)", "type": "numeric", "format": {"specifier": ".5f"}},
+            {"name": "p-value (OOS)", "id": "P-Value (OOS)", "type": "numeric", "format": {"specifier": ".5f"}},
+            {"name": "Hedge Ratio", "id": "Hedge Ratio", "type": "numeric", "format": {"specifier": ".3f"}},
+        ],
+        data=validation.to_dict("records"), page_size=25, sort_action="native", filter_action="native",
+        style_header=datatable_style_header(), style_data=datatable_style_data(), style_cell=datatable_style_cell(),
+        style_cell_conditional=[{"if": {"column_id": c}, "fontWeight": "bold", "color": THEME["accent"]} for c in ["Ticker A", "Ticker B"]],
+        style_data_conditional=[
+            datatable_row_alt_rule(),
+            {"if": {"filter_query": "{Composite Score Δ (OOS - IS)} > 0", "column_id": "Composite Score Δ (OOS - IS)"}, "color": THEME["pos"], "fontWeight": "bold"},
+            {"if": {"filter_query": "{Composite Score Δ (OOS - IS)} < 0", "column_id": "Composite Score Δ (OOS - IS)"}, "color": THEME["neg"]},
+        ],
+    )
+
+    n_improved = int((validation["Composite Score Δ (OOS - IS)"] > 0).sum())
+    status = html.Div([
+        html.Div(
+            f"Zwalidowano {len(validation)} par (trening={test_years} {'rok' if test_years==1 else 'lat'} przed końcem danych) -- "
+            f"{n_improved} z {len(validation)} par utrzymało lub poprawiło swój Composite Score poza próbą. "
+            f"Najlepsza OOS: {validation.iloc[0]['Ticker A']}/{validation.iloc[0]['Ticker B']}.",
+            style={"color": THEME["pos"]}
+        ),
+    ] + ([failed_note] if failed_note else []))
+    return table, status
+
+
+# ---------------------------------------------------------------------------
+# Sekcja 5 (czwarta zakladka modulu): IS Score (5-letni trening, metoda
+# progowa z zakladki OOS) x Trailing Score theta (12 miesiecy, ranking
+# wzgledem innych par w kazdym miesiacu osobno) -- confirmed design
+# (2026-09-08, siodmy follow-up): p-value NIE jest tu uzywane WCALE.
+# ---------------------------------------------------------------------------
+
+STABILITY_THRESHOLD = 0.8  # confirmed empirycznie przez wlasciciela projektu
+
+
+@app.callback(
+    Output("relval-monthly-scatter", "figure"),
+    Output("relval-monthly-table", "children"),
+    Output("relval-monthly-status", "children"),
+    Input("btn-relval-monthly-run", "n_clicks"),
+    State("relval-monthly-min-gates", "value"), State("relval-monthly-theta", "value"),
+    prevent_initial_call=True,
+)
+def run_monthly_persistence_test(_n_clicks, min_gates, theta):
+    """
+    Self-contained, fetches 6Y fresh (5Y train + up to 12 test months),
+    matching the pattern of the other three sub-tabs. Candidate pairs come
+    from a full-window scan filtered by min_gates -- purely a coarse
+    initial filter; cointegration p-value plays NO further role anywhere
+    in this tab (confirmed design, 2026-09-08 seventh follow-up: "nie wiem
+    czy p-value jest tu w ogole przydatne... ciagle gdzies je wrzucasz" --
+    it is deliberately absent from both the chart and the table here).
+
+    Combines two DIFFERENT mechanisms by design, made explicit rather than
+    silently mixed: "IS Score" reuses run_walk_forward_validation's
+    Composite Score (IS) -- the discrete threshold-switching backtest over
+    the full 5-year training window (no extra data/compute needed, already
+    well-defined). "Trailing Score" is NEW, using the theta/monthly
+    production-mechanism prototype specifically, over the trailing 12
+    months (run_theta_trailing_stability) -- confirmed instruction ("teraz
+    tylko trzeba to zaimplementowac dla strategii z theta"). The two
+    axes therefore answer two different but complementary questions: "was
+    this pair generally good historically" (IS, any reasonable method) and
+    "does the ACTUAL theta mechanism show a stable, consistently
+    well-ranked edge recently" (Trailing, the production-candidate method).
+
+    The chart directly visualizes the project owner's own empirical
+    observation from an earlier IS/OOS table: pairs scoring above
+    STABILITY_THRESHOLD (0.8) in BOTH dimensions tended to beat the best
+    single-stock alternative -- rendered here as reference lines on both
+    axes plus a distinct marker color for pairs clearing both.
+    """
+    theta = theta or 0.15
+
+    tickers = [c["Ticker"] for c in uni.list_companies()]
+    empty_fig = go.Figure()
+    if len(tickers) < 2:
+        return empty_fig, html.Div(), html.Div("Uniwersum ma mniej niż 2 spółki.", style={"color": THEME["neg"]})
+
+    prices_df, valid_tickers = fetch_universe_prices(tickers, period="6y")
+    failed_note = _failed_tickers_note(tickers, valid_tickers)
+    if prices_df.empty or len(valid_tickers) < 2:
+        msgs = [html.Div("Nie udało się pobrać danych cenowych dla uniwersum.", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
+        return empty_fig, html.Div(), html.Div(msgs)
+
+    full_scan = scan_universe_diagnostics(prices_df, tickers=valid_tickers)
+    candidate_pairs = full_scan[full_scan["Gates Passed"] >= min_gates]
+    if candidate_pairs.empty:
+        msgs = [html.Div(f"Żadna para nie ma co najmniej {min_gates}/3 bramek.", style={"color": THEME["warn"]})] + ([failed_note] if failed_note else [])
+        return empty_fig, html.Div(), html.Div(msgs)
+
+    is_scores = run_walk_forward_validation(prices_df, candidate_pairs, test_years=1)
+    trailing_scores = run_theta_trailing_stability(prices_df, candidate_pairs, theta=theta)
+
+    if is_scores.empty or trailing_scores.empty:
+        msgs = [html.Div("Za mało wspólnej historii, żeby policzyć zarówno IS Score, jak i Trailing Score dla którejkolwiek pary.", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
+        return empty_fig, html.Div(), html.Div(msgs)
+
+    merged = pd.merge(
+        is_scores[["Ticker A", "Ticker B", "Composite Score (IS)"]],
+        trailing_scores[["Ticker A", "Ticker B", "Trailing Score (mean)", "Trailing Score (std)", "N Miesięcy"]],
+        on=["Ticker A", "Ticker B"], how="inner",
+    )
+    if merged.empty:
+        msgs = [html.Div("Żadna para nie ma jednocześnie policzonego IS Score i Trailing Score.", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
+        return empty_fig, html.Div(), html.Div(msgs)
+
+    merged["Oba > 0.8"] = (merged["Composite Score (IS)"] > STABILITY_THRESHOLD) & (merged["Trailing Score (mean)"] > STABILITY_THRESHOLD)
+    merged = merged.sort_values("Trailing Score (mean)", ascending=False).reset_index(drop=True)
+
+    fig = go.Figure()
+    for both_high, label, color in [(True, f"Oba > {STABILITY_THRESHOLD}", THEME["pos"]), (False, "Poniżej progu w co najmniej jednym oknie", THEME["text_dim"])]:
+        subset = merged[merged["Oba > 0.8"] == both_high]
+        if subset.empty:
+            continue
+        fig.add_trace(go.Scatter(
+            x=subset["Composite Score (IS)"], y=subset["Trailing Score (mean)"], mode="markers", name=label,
+            error_y=dict(type="data", array=subset["Trailing Score (std)"], color=color, thickness=1.3, width=4),
+            marker=dict(size=11, color=color, line=dict(width=1, color=THEME["bg_base"])),
+            text=[f"{a}/{b}" for a, b in zip(subset["Ticker A"], subset["Ticker B"])],
+            hovertemplate="%{text}<br>IS Score=%{x:.3f}<br>Trailing Score=%{y:.3f}<extra></extra>",
+        ))
+    fig.add_vline(x=STABILITY_THRESHOLD, line=dict(color=THEME["warn"], dash="dot"))
+    fig.add_hline(y=STABILITY_THRESHOLD, line=dict(color=THEME["warn"], dash="dot"))
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        margin=dict(l=60, r=30, t=20, b=50), font_family=THEME["font"],
+        legend=dict(orientation="h", y=1.08, font=dict(size=10, color=THEME["text_dim"])),
+        xaxis=dict(title="IS Score (trening 5-letni, metoda progowa)", range=[0, 1.05],
+                   showgrid=True, gridcolor=THEME["border"], tickfont=dict(color=THEME["text_dim"], size=10)),
+        yaxis=dict(title="Trailing Score (śr. z 12 mies., metoda theta) ± odchylenie std", range=[0, 1.05],
+                   showgrid=True, gridcolor=THEME["border"], tickfont=dict(color=THEME["text_dim"], size=10)),
+    )
+
+    table = dash_table.DataTable(
+        columns=[
+            {"name": "Spółka A", "id": "Ticker A"}, {"name": "Spółka B", "id": "Ticker B"},
+            {"name": "IS Score", "id": "Composite Score (IS)", "type": "numeric", "format": {"specifier": ".3f"}},
+            {"name": "Trailing Score (śr.)", "id": "Trailing Score (mean)", "type": "numeric", "format": {"specifier": ".3f"}},
+            {"name": "Trailing Score (std)", "id": "Trailing Score (std)", "type": "numeric", "format": {"specifier": ".3f"}},
+            {"name": "N Miesięcy", "id": "N Miesięcy"},
+        ],
+        data=merged.to_dict("records"), page_size=25, sort_action="native", filter_action="native",
+        style_header=datatable_style_header(), style_data=datatable_style_data(), style_cell=datatable_style_cell(),
+        style_cell_conditional=[{"if": {"column_id": c}, "fontWeight": "bold", "color": THEME["accent"]} for c in ["Ticker A", "Ticker B"]],
+        style_data_conditional=[
+            datatable_row_alt_rule(),
+            {"if": {"filter_query": f"{{Composite Score (IS)}} > {STABILITY_THRESHOLD} && {{Trailing Score (mean)}} > {STABILITY_THRESHOLD}"}, "backgroundColor": "rgba(0,200,83,0.08)"},
+        ],
+    )
+
+    n_both_high = int(merged["Oba > 0.8"].sum())
+    status = html.Div([
+        html.Div(
+            f"Policzono {len(merged)} par (theta={theta}, IS=5 lat treningu, Trailing=12 miesięcy) -- "
+            f"{n_both_high} z {len(merged)} par ma Score > {STABILITY_THRESHOLD} w OBU oknach czasowych.",
+            style={"color": THEME["pos"] if n_both_high else THEME["text_dim"]}
+        ),
+    ] + ([failed_note] if failed_note else []))
+    return fig, table, status

@@ -1,78 +1,85 @@
-# Jak odpalić Quant Terminal lokalnie
+# Beyond-Markowitz Quant Terminal — Setup Guide
 
-Masz już folder `quant-terminal` i `venv` – super, zostały 2 kroki.
+A local Dash application for portfolio construction research, extending
+mean-variance optimization with tail-risk-adjusted scoring, hierarchical
+clustering, single-asset return projection, and statistical pair-relative
+analysis. This guide covers installation and startup for reviewers running
+the application locally.
 
-## 1. Podmień plik i doinstaluj zależności
+## Prerequisites
 
-1. Zamień swój obecny `quant_terminal.py` na wersję z tego czatu (poniżej) — ma dodane logowanie
-   pełnych błędów do konsoli zamiast ich ukrywania.
-2. Wrzuć `requirements.txt` do tego samego folderu co `quant_terminal.py`.
-3. Aktywuj venv i zainstaluj:
+- Python 3.10 or later
+- A Python virtual environment (referred to below as `venv`)
 
-```bash
-# Windows
-venv\Scripts\activate
+## 1. Installation
 
-# Mac/Linux
-source venv/bin/activate
+1. Place the full project directory on disk. The application is organized
+   as a package, not a single script — the following structure must be
+   preserved as-is:
 
-pip install -r requirements.txt
-```
+   ```
+   quant-terminal/
+   ├── app.py                  # Entry point
+   ├── requirements.txt
+   ├── engine/                 # Core quantitative logic (pure functions, no UI)
+   ├── data/                   # Persistence and market data access
+   ├── ui/                     # Dash layout and callbacks
+   ├── storage/                # Runtime data (portfolios, universe, history)
+   └── scripts/                # One-off maintenance/migration scripts
+   ```
 
-## 2. Uruchom
+2. Activate the virtual environment:
 
-**WAŻNE (po refaktorze Etap 0):** aplikacja to teraz kilka plików w folderach
-`engine/`, `data/`, `ui/`, nie jeden `quant_terminal.py`. Rozpakuj wszystkie
-foldery i pliki do jednego katalogu projektu (struktura musi zostać
-zachowana — `engine/`, `data/`, `ui/` jako podfoldery obok `app.py`), a
-`saved_portfolios.json` zostaje w katalogu głównym, obok `app.py`.
+   ```bash
+   # Windows
+   venv\Scripts\activate
 
-Uruchamiasz teraz `app.py`, nie `quant_terminal.py`:
+   # macOS / Linux
+   source venv/bin/activate
+   ```
+
+3. Install dependencies:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## 2. Running the Application
+
+From the project root, with the virtual environment active:
 
 ```bash
 python3 app.py
 ```
 
-Terminal w konsoli pokaże coś w stylu:
+The console will report:
 
 ```
 Dash is running on http://127.0.0.1:8050/
 ```
 
-Otwórz ten adres w przeglądarce. To Twój **własny proces**, bez cudzego serwera,
-bez timeoutów przeglądarkowego IDE.
+Open this address in a browser. The application runs as a local process
+with no external server dependency and no browser-IDE session timeouts.
 
-## 3. Jak teraz diagnozować błędy
+## 3. Diagnosing Issues
 
-Największa zmiana: jeśli coś się wywali, **nie patrz tylko na czerwony napis w appce** —
-patrz w konsolę/terminal, w którym odpaliłeś `python3 quant_terminal.py`. Teraz zobaczysz
-tam pełny traceback (dokładną linijkę i typ błędu), np.:
+Runtime errors are logged with full tracebacks to the terminal session
+running `app.py`, not only summarized in the browser. When investigating
+an issue, the terminal output — not the in-app error banner — is the
+primary source of diagnostic information (exact file, line number, and
+exception type).
 
-```
-[STAGE 1] CRITICAL ERROR - PEŁNY TRACEBACK:
-Traceback (most recent call last):
-  File "quant_terminal.py", line ..., in run_stage_01_ingestion
-    ...
-yfinance.exceptions.YFRateLimitError: Too many requests
-```
+## 4. Known Issues and Resolutions
 
-To mi (albo Tobie) mówi dokładnie co się dzieje, zamiast zgadywania.
-
-## 4. Najczęstsze błędy i co znaczą
-
-| Widzisz w konsoli | Co to znaczy | Co zrobić |
+| Symptom | Cause | Resolution |
 |---|---|---|
-| `YFRateLimitError` / puste dane | Yahoo chwilowo blokuje Twoje IP po zbyt wielu requestach | Odczekaj kilka minut, nie odświeżaj appki w kółko |
-| `JSONDecodeError` z yfinance | Yahoo zmienił format odpowiedzi, stara wersja `yfinance` tego nie obsługuje | `pip install --upgrade yfinance` |
-| Callback error w przeglądarce, ale konsola milczy | To już nie powinno się zdarzać po poprawce — jeśli się zdarzy, wyślij mi zrzut konsoli |
-| `Address already in use` / port zajęty | Poprzedni proces Pythona nadal działa | Zamknij terminal (Ctrl+C) albo zmień port na końcu pliku: `app.run(debug=True, port=8060)` |
-| Slidery/dropdowny białe albo nieostylowane mimo custom CSS w `app.index_string` | `pip install` ściągnął Dash 4.x, który od zera przepisał `dcc.Slider`/`dcc.Dropdown` (bez `rc-slider`/`react-select`) — stary CSS celuje w klasy, których już nie ma w DOM | `requirements.txt` ma już pin `dash<4.0`. Zrób `pip install -r requirements.txt --upgrade` w aktywnym venv, żeby zejść na 3.x. Sprawdź wersję: `python -c "import dash; print(dash.__version__)"` |
+| `YFRateLimitError`, or empty market data | Yahoo Finance is temporarily rate-limiting the client IP address | Wait several minutes before retrying; avoid repeated rapid refreshes |
+| `JSONDecodeError` originating from `yfinance` | Upstream Yahoo Finance response format has changed; the installed `yfinance` version predates the change | `pip install --upgrade yfinance` |
+| Sliders or dropdowns render unstyled despite custom CSS | `pip install` resolved Dash 4.x, which replaced the underlying `dcc.Slider` / `dcc.Dropdown` implementations (no longer built on `rc-slider` / `react-select`); the existing dark-theme CSS targets DOM classes that no longer exist | `requirements.txt` pins `dash<4.0`. Run `pip install -r requirements.txt --upgrade` inside the active virtual environment, then confirm with `python -c "import dash; print(dash.__version__)"` |
+| `Address already in use` on startup | A prior Python process is still bound to the port | Terminate the existing process (Ctrl+C in its terminal), or change the port at the bottom of `app.py`: `app.run(debug=True, port=8060)` |
 
-## 5. Co dalej
+## 5. Feedback
 
-Jak już to postawisz lokalnie i odpalisz Stage 1 (wpisując np. tickery z placeholdera),
-daj znać co konkretnie widzisz w konsoli — jeśli coś nadal siada, poprawimy to punktowo
-zamiast zgadywać na ślepo.
-
-README zostaje na razie nietknięte (zgodnie z tym co mówiłeś — punkt 4 i wcześniejsze
-kroki jeszcze do przemyślenia z Twojej strony).
+When reporting an issue, please include the full terminal traceback rather
+than a description of the on-screen symptom — this allows the underlying
+cause to be addressed directly rather than inferred.

@@ -49,7 +49,8 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-from statsmodels.tsa.stattools import coint
+from scipy import stats as scipy_stats
+from statsmodels.tsa.stattools import coint, adfuller
 
 TRADING_DAYS_2Y = 504  # 2 * 252, kept only as a general "at least ~2Y of data" minimum-length sanity floor
 
@@ -646,3 +647,618 @@ def compute_correlations(df: pd.DataFrame, target_col: str, candidate_cols: List
         if pd.notna(corr):
             correlations[col] = float(corr)
     return pd.Series(correlations).sort_values(key=lambda s: s.abs(), ascending=False)
+
+
+# ---------------------------------------------------------------------------
+# Walk-Forward Out-of-Sample Validation (2026-09-08, fifth follow-up)
+# ---------------------------------------------------------------------------
+
+DEFAULT_TEST_YEARS = 1  # dlugosc okna OOS, w latach kalendarzowych
+
+
+def run_walk_forward_validation(
+    prices_df: pd.DataFrame, pairs_df: pd.DataFrame,
+    test_years: float = DEFAULT_TEST_YEARS,
+    entry_z: float = DEFAULT_ENTRY_Z, exit_z: float = DEFAULT_EXIT_Z,
+    favour_weight: float = DEFAULT_FAVOUR_WEIGHT, zscore_lookback: int = DEFAULT_ZSCORE_LOOKBACK,
+    fee_bps: float = DEFAULT_FEE_BPS,
+) -> pd.DataFrame:
+    """
+    Walk-forward out-of-sample validation (confirmed design, 2026-09-08
+    fifth follow-up): checks whether a pair's edge, discovered on TRAIN
+    data, actually persisted into a held-out TEST period it never
+    influenced -- everything built before this function was purely
+    in-sample (a pair was screened and immediately praised on the SAME
+    data used to find it, which cannot distinguish a real, persistent
+    relationship from a pattern that only fit that specific historical
+    window by chance).
+
+    Split, and why it's done this way
+    ------------------------------------
+    - Boundary is a CALENDAR date (`prices.index[-1] - DateOffset(years=test_years)`),
+      NOT a fixed row-count offset -- same lesson as the 2Y-drift row-count
+      bug fixed earlier in this project: a row-count split would land on a
+      different calendar date depending on how many "phantom" ffilled rows
+      a mixed-exchange batch fetch happened to produce.
+    - `hedge_ratio` and every gate diagnostic (p-value, half-life, gates
+      passed) are computed ONLY from the TRAIN slice
+      (`evaluate_pair_diagnostics` on TRAIN prices alone). This is the
+      whole point of the exercise: if hedge_ratio were re-estimated using
+      TEST data too, the "test" would silently know about the future it's
+      supposed to be validating against, which defeats the purpose.
+    - The actual backtest (`simulate_pair_strategy`) runs across the FULL
+      window (TRAIN + TEST) in one pass, using the TRAIN-derived
+      hedge_ratio throughout -- not simulated separately on each half --
+      so the rolling Z-score at the very start of the TEST period still
+      has its full lookback of real preceding data to compute against,
+      exactly like a live system would experience crossing that date, not
+      an artificially cold start.
+    - The single resulting equity curve is then SPLIT into an in-sample
+      (IS) segment and an out-of-sample (OOS) segment. The OOS segment is
+      REBASED to start at 100 exactly at the boundary (each of the 4
+      curves divided by its own value at that day) -- this measures ONLY
+      what happened during the held-out year, not "IS performance carried
+      forward plus whatever OOS added on top", which would make a pair
+      that was merely lucky in-sample look artificially good out-of-sample
+      too just from compounding.
+    - A SEPARATE statistical check re-tests cointegration on the OOS price
+      slice alone, still holding `hedge_ratio` FIXED at its TRAIN-derived
+      value (does not re-run OLS on OOS data) -- confirmed addition
+      ("możesz dodać"). Because gamma is now a fixed, externally-supplied
+      constant rather than something being jointly estimated from the same
+      data under test, the correct test here is a PLAIN Augmented
+      Dickey-Fuller test on the resulting fixed-gamma spread
+      (`statsmodels.tsa.stattools.adfuller`), NOT the two-step
+      Engle-Granger `coint()` used for the original screen -- `coint()`'s
+      MacKinnon-adjusted critical values specifically correct for jointly
+      estimating the regression coefficient on the tested data itself,
+      which does not apply here since gamma is already known.
+
+    Composite Score comparison (confirmed design: "chcę różnicę score 50/50
+    zobaczyć jak się zmienił"): "Composite Score (IS)" and "Composite Score
+    (OOS)" are each computed by percentile-ranking EVERY pair in this batch
+    on its own Alpha/Days-In-Lead for that specific segment -- i.e. two
+    INDEPENDENT rankings (one using only IS numbers, one using only OOS
+    numbers), not one ranking reused for both. This is what makes
+    "Composite Score Δ (OOS - IS)" meaningful: it answers "did this pair's
+    RELATIVE STANDING among its peers hold up once none of them could
+    benefit from being chosen for their in-sample performance," not just
+    whether its raw numbers went up or down.
+
+    Returns
+    -------
+    pd.DataFrame, one row per pair (pairs with insufficient TRAIN or TEST
+    data are silently skipped), columns:
+        "Ticker A", "Ticker B", "Hedge Ratio" (TRAIN-derived, fixed),
+        "Gates Passed (Train)", "P-Value (Train)", "Half-Life (Train)",
+        "Relative Alpha IS [%]", "Days In Lead IS [%]", "Composite Score (IS)",
+        "P-Value (OOS)", "Half-Life (OOS)", "Gates Passed (OOS)" (0-2:
+        cointegration + half-life only -- hedge ratio isn't re-tested since
+        it's held fixed by construction),
+        "Relative Alpha OOS [%]", "Days In Lead OOS [%]", "Composite Score (OOS)",
+        "Composite Score Δ (OOS - IS)"
+    Sorted by "Composite Score (OOS)" descending -- ranks pairs by how they
+    ACTUALLY performed in the untouched year, not by their in-sample story.
+    """
+    boundary_date = prices_df.index[-1] - pd.DateOffset(years=test_years)
+
+    prelim = []
+    for _, row in pairs_df.iterrows():
+        tA, tB = row["Ticker A"], row["Ticker B"]
+        if tA not in prices_df.columns or tB not in prices_df.columns:
+            continue
+        pair_df = prices_df[[tA, tB]].dropna(how="any")
+        if not isinstance(pair_df.index, pd.DatetimeIndex):
+            pair_df = pair_df.copy()
+            pair_df.index = pd.to_datetime(pair_df.index)
+
+        train_df = pair_df[pair_df.index <= boundary_date]
+        test_df = pair_df[pair_df.index > boundary_date]
+        if len(train_df) < TRADING_DAYS_2Y or len(test_df) < 60:
+            continue  # za malo danych treningowych (min ~2Y) lub testowych (min ~kwartal) po ktorejs stronie
+
+        pa_train, pb_train = train_df[tA], train_df[tB]
+        train_diag = evaluate_pair_diagnostics(pa_train, pb_train)
+        hedge_ratio = train_diag["hedge_ratio"]
+
+        pa_full, pb_full = pair_df[tA], pair_df[tB]
+        result = simulate_pair_strategy(pa_full, pb_full, hedge_ratio=hedge_ratio, entry_z=entry_z, exit_z=exit_z,
+                                         favour_weight=favour_weight, zscore_lookback=zscore_lookback, fee_bps=fee_bps)
+        if not result["dates"]:
+            continue
+
+        result_dates = pd.to_datetime(result["dates"])
+        boundary_pos = int(result_dates.searchsorted(boundary_date, side="right"))
+        if boundary_pos < 30 or (len(result_dates) - boundary_pos) < 30:
+            continue  # rolling Z-score lookback moze zjesc wiecej niz oczekiwano z ktoregos konca
+
+        def _segment_alpha_lead(sl, rebase):
+            strat = np.array(result["equity_strategy"][sl])
+            bench = np.array(result["equity_benchmark"][sl])
+            a100 = np.array(result["equity_100a"][sl])
+            b100 = np.array(result["equity_100b"][sl])
+            if rebase:
+                strat, bench, a100, b100 = (arr / arr[0] * 100.0 for arr in (strat, bench, a100, b100))
+            best_alt = max(bench[-1], a100[-1], b100[-1])
+            alpha = (strat[-1] / best_alt - 1.0) * 100.0 if best_alt > 0 else 0.0
+            others_max = np.maximum.reduce([bench, a100, b100])
+            days_in_lead = float(np.mean(strat >= others_max) * 100.0)
+            return alpha, days_in_lead
+
+        alpha_is, lead_is = _segment_alpha_lead(slice(0, boundary_pos), rebase=False)
+        alpha_oos, lead_oos = _segment_alpha_lead(slice(boundary_pos, None), rebase=True)
+
+        # Statystyczny test na OOS z FIXED hedge_ratio -- plain ADF, nie coint()
+        # (patrz docstring: gamma juz nie jest estymowana na danych pod testem).
+        pa_oos, pb_oos = test_df[tA], test_df[tB]
+        spread_oos = np.log(pa_oos) - hedge_ratio * np.log(pb_oos)
+        try:
+            p_value_oos = float(adfuller(spread_oos.values, maxlag=1, result_object=False)[1])
+        except Exception:
+            p_value_oos = float("nan")
+        half_life_oos = _half_life(spread_oos)
+
+        coint_pass_oos = p_value_oos < DEFAULT_P_VALUE_MAX if np.isfinite(p_value_oos) else False
+        half_life_pass_oos = DEFAULT_HALF_LIFE_MIN <= half_life_oos <= DEFAULT_HALF_LIFE_MAX
+        gates_passed_oos = int(coint_pass_oos) + int(half_life_pass_oos)
+
+        prelim.append({
+            "Ticker A": tA, "Ticker B": tB, "Hedge Ratio": round(hedge_ratio, 3),
+            "Gates Passed (Train)": train_diag["gates_passed"],
+            "P-Value (Train)": train_diag["p_value"], "Half-Life (Train)": train_diag["half_life"],
+            "Relative Alpha IS [%]": round(alpha_is, 2), "Days In Lead IS [%]": round(lead_is, 1),
+            "P-Value (OOS)": round(p_value_oos, 5) if np.isfinite(p_value_oos) else p_value_oos,
+            "Half-Life (OOS)": round(half_life_oos, 1) if np.isfinite(half_life_oos) else half_life_oos,
+            "Gates Passed (OOS)": gates_passed_oos,
+            "Relative Alpha OOS [%]": round(alpha_oos, 2), "Days In Lead OOS [%]": round(lead_oos, 1),
+        })
+
+    if not prelim:
+        return pd.DataFrame()
+
+    out = pd.DataFrame(prelim)
+    is_alpha_rank = out["Relative Alpha IS [%]"].rank(pct=True)
+    is_lead_rank = out["Days In Lead IS [%]"].rank(pct=True)
+    out["Composite Score (IS)"] = round(0.5 * is_alpha_rank + 0.5 * is_lead_rank, 4)
+
+    oos_alpha_rank = out["Relative Alpha OOS [%]"].rank(pct=True)
+    oos_lead_rank = out["Days In Lead OOS [%]"].rank(pct=True)
+    out["Composite Score (OOS)"] = round(0.5 * oos_alpha_rank + 0.5 * oos_lead_rank, 4)
+
+    out["Composite Score Δ (OOS - IS)"] = round(out["Composite Score (OOS)"] - out["Composite Score (IS)"], 4)
+
+    return out.sort_values("Composite Score (OOS)", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Monthly Rolling Walk-Forward -- production-mechanism prototype
+# (2026-09-08, sixth follow-up)
+# ---------------------------------------------------------------------------
+
+DEFAULT_THETA = 0.15
+DEFAULT_ZSCORE_WINDOW_MONTHLY = 252   # patrz uzasadnienie w PROJECT_CONTEXT.md -- dluzsze okno
+                                        # niz w codziennej strategii (63), celowo
+DEFAULT_TRAIN_YEARS_MONTHLY = 5
+DEFAULT_N_MONTHS = 12
+DEFAULT_REBALANCE_DAYS = 21           # sesje miedzy rebalansami, zgodnie z rytmem projektu
+
+
+def simulate_monthly_walkforward(
+    prices_a: pd.Series, prices_b: pd.Series,
+    theta: float = DEFAULT_THETA,
+    zscore_window: int = DEFAULT_ZSCORE_WINDOW_MONTHLY,
+    train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY,
+    n_months: int = DEFAULT_N_MONTHS,
+    rebalance_days: int = DEFAULT_REBALANCE_DAYS,
+) -> Dict[str, object]:
+    """
+    Monthly rolling walk-forward -- a PROTOTYPE of the actual production
+    mechanism (smooth, bounded tanh-based weight tilt, checked once per
+    ~21-session rebalance cycle and held without reaction), not another
+    variant of the discrete daily threshold-switching backtest
+    (simulate_pair_strategy). Confirmed design (2026-09-08, sixth
+    follow-up): the project owner explicitly rejected p-value/cointegration
+    "quality" as the thing that matters -- "nie obchodzi mnie jaka
+    jest p-value... interesuje mnie najwyzszy score i w jakim horyzoncie
+    bedzie sie to utrzymywalo STATYSTYCZNIE" -- so this function does NOT
+    gate or report cointegration p-value at all. hedge_ratio is kept
+    purely as the technical device needed to construct the spread/Z-score,
+    not as a claim about the pair's statistical "validity".
+
+    Mechanism, month by month (12 sequential, NON-overlapping ~21-session
+    blocks, walking backward from the end of the data)
+    -----------------------------------------------------------------------
+    For each of the last `n_months` blocks:
+    1. TRAIN window = the `train_years` immediately preceding that month's
+       start (a CALENDAR-anchored offset, not a row-count one -- same
+       lesson as the 2Y-drift bug and the walk-forward OOS split earlier
+       in this project). hedge_ratio is estimated from this TRAIN slice
+       ONLY via OLS (`_hedge_ratio_and_spread`) -- re-estimated fresh for
+       EVERY month, since each month's train window is different (this is
+       a genuinely ROLLING walk-forward, not one fixed split).
+    2. The Z-score baseline (mean and std of the spread) is estimated from
+       the LAST `zscore_window` sessions of that TRAIN window -- 252 by
+       default, deliberately longer than the 63-session window used for
+       the live daily signal elsewhere in this project. See
+       PROJECT_CONTEXT.md for the full justification; in short: (a) a
+       shorter window's own mean/std estimates carry more sampling noise
+       (standard error scales as 1/sqrt(n)), and a monthly-checked signal
+       has no chance to average that noise out between checks the way a
+       daily-reacting system would; (b) this project's half-life gate
+       tolerates cycles up to 63 sessions long, so a 63-session window
+       could span less than one full reversion cycle, contaminating the
+       "baseline" with wherever the cycle happens to be rather than its
+       true center -- 252 sessions comfortably spans several full cycles
+       even at the slow end.
+    3. The CURRENT spread, evaluated at the TRAIN window's very last point
+       (= the day immediately before the test month begins), is
+       Z-scored against that baseline.
+    4. Weight tilt is smooth and bounded, not a discrete threshold switch:
+           weight_A = 0.5 + 0.5 * theta * tanh(-Z)
+       (theta=0.15 -> weight_A ranges [0.425, 0.575] -- a gentle tilt
+       around 50/50, never a hard swing, matching the project's explicit
+       Long-Only, non-arbitrage philosophy from the start of this whole
+       feature). This weight is HELD FIXED for the entire month -- no
+       within-month reaction at all, unlike the daily threshold-switching
+       backtest elsewhere in this module.
+    5. Monthly Alpha = (tilted month return) - (50/50 month return), in
+       percentage points -- a DIFFERENCE over the SAME single month, not a
+       ratio over two differently-scaled multi-year curves. This is a
+       deliberately different, more narrowly-scoped metric than
+       "Relative Alpha [%]" elsewhere: it isolates "did tilting away from
+       50/50 help in THIS SPECIFIC MONTH", which is the natural comparison
+       for a mechanism that is fundamentally a perturbation AROUND 50/50.
+
+    Statistical summary across the n_months results (confirmed requirement:
+    "musze miec jakis wskaznik ktory mi powie czy para statystycznie
+    zachowuje wlasciwosci"): mean monthly alpha, its sample standard
+    deviation, and a one-sample t-test against the null hypothesis that
+    the TRUE mean monthly alpha is zero (`scipy.stats.ttest_1samp`). The
+    resulting t-statistic and p-value are the direct, formal answer to
+    "is this edge distinguishable from noise, given how much it bounces
+    around month to month" -- a pair with a high average edge but wildly
+    inconsistent monthly results will still show a weak, statistically
+    unconvincing t-statistic, exactly the discriminating signal being
+    asked for.
+
+    Returns
+    -------
+    dict with keys:
+        "monthly_alpha"  : list[float], one value per successfully-computed month
+        "details"        : list[dict], per-month {month_start, z_score, weight_a, monthly_alpha_pp}
+        "mean_alpha"     : float or None (None if fewer than 2 usable months)
+        "std_alpha"      : float or None (sample std, ddof=1)
+        "t_stat"         : float or None
+        "p_value"        : float or None (two-sided, H0: true mean = 0)
+        "n_months"       : int, how many months were actually usable (<= n_months
+                            requested -- a month is skipped if its preceding
+                            TRAIN window doesn't have enough data, e.g. too
+                            close to the start of the available price history)
+    """
+    pair_df = pd.DataFrame({"a": prices_a, "b": prices_b}).dropna()
+    if not isinstance(pair_df.index, pd.DatetimeIndex):
+        pair_df = pair_df.copy()
+        pair_df.index = pd.to_datetime(pair_df.index)
+
+    total_test_rows = n_months * rebalance_days
+    if len(pair_df) < total_test_rows + 30:
+        return {"monthly_alpha": [], "details": [], "mean_alpha": None, "std_alpha": None,
+                "t_stat": None, "p_value": None, "n_months": 0}
+
+    test_start_pos = len(pair_df) - total_test_rows
+    monthly_alphas = []
+    details = []
+
+    for m in range(n_months):
+        month_start_pos = test_start_pos + m * rebalance_days
+        month_end_pos = month_start_pos + rebalance_days
+        if month_end_pos > len(pair_df):
+            break
+
+        month_start_date = pair_df.index[month_start_pos]
+        train_boundary_date = month_start_date - pd.DateOffset(years=train_years)
+        train_df = pair_df[(pair_df.index >= train_boundary_date) & (pair_df.index < month_start_date)]
+        if len(train_df) < TRADING_DAYS_2Y:
+            continue  # za malo historii treningowej przed tym miesiacem (np. za blisko poczatku danych)
+
+        pa_train, pb_train = train_df["a"], train_df["b"]
+        hr_result = _hedge_ratio_and_spread(np.log(pa_train), np.log(pb_train))
+        hedge_ratio = hr_result["gamma"]
+        train_spread = hr_result["spread"]
+
+        baseline_window = train_spread.iloc[-zscore_window:] if len(train_spread) >= zscore_window else train_spread
+        baseline_mean = float(baseline_window.mean())
+        baseline_std = float(baseline_window.std())
+        if baseline_std == 0 or not np.isfinite(baseline_std):
+            continue
+
+        current_spread = float(train_spread.iloc[-1])
+        z_at_month_start = (current_spread - baseline_mean) / baseline_std
+
+        weight_a = 0.5 + 0.5 * theta * np.tanh(-z_at_month_start)
+        weight_b = 1.0 - weight_a
+
+        month_slice = pair_df.iloc[month_start_pos:month_end_pos]
+        ret_a_month = float(month_slice["a"].iloc[-1] / month_slice["a"].iloc[0] - 1.0)
+        ret_b_month = float(month_slice["b"].iloc[-1] / month_slice["b"].iloc[0] - 1.0)
+
+        ret_dynamic = weight_a * ret_a_month + weight_b * ret_b_month
+        ret_5050 = 0.5 * ret_a_month + 0.5 * ret_b_month
+        monthly_alpha_pp = (ret_dynamic - ret_5050) * 100.0
+
+        monthly_alphas.append(monthly_alpha_pp)
+        details.append({
+            "month_start": month_start_date.strftime("%Y-%m-%d"),
+            "z_score": round(float(z_at_month_start), 3),
+            "weight_a": round(float(weight_a), 3),
+            "monthly_alpha_pp": round(float(monthly_alpha_pp), 3),
+        })
+
+    n = len(monthly_alphas)
+    if n < 2:
+        return {"monthly_alpha": monthly_alphas, "details": details, "mean_alpha": None, "std_alpha": None,
+                "t_stat": None, "p_value": None, "n_months": n}
+
+    arr = np.array(monthly_alphas)
+    mean_alpha = float(arr.mean())
+    std_alpha = float(arr.std(ddof=1))
+    t_stat, p_value = scipy_stats.ttest_1samp(arr, 0.0)
+
+    return {
+        "monthly_alpha": monthly_alphas, "details": details,
+        "mean_alpha": mean_alpha, "std_alpha": std_alpha,
+        "t_stat": float(t_stat), "p_value": float(p_value), "n_months": n,
+    }
+
+
+def run_monthly_walkforward_batch(
+    prices_df: pd.DataFrame, pairs_df: pd.DataFrame,
+    theta: float = DEFAULT_THETA, zscore_window: int = DEFAULT_ZSCORE_WINDOW_MONTHLY,
+    train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY, n_months: int = DEFAULT_N_MONTHS,
+    rebalance_days: int = DEFAULT_REBALANCE_DAYS,
+) -> pd.DataFrame:
+    """
+    Runs simulate_monthly_walkforward for every pair in `pairs_df`
+    (expects "Ticker A"/"Ticker B" columns -- e.g. scan_universe_diagnostics's
+    output, though its p-value/half-life columns are NOT used for gating
+    here at all, per confirmed design: this mechanism is judged purely on
+    whether its own monthly edge is statistically distinguishable from
+    zero, not on cointegration "quality").
+
+    Sorted by |t-statistic| descending -- confirmed priority ("interesuje
+    mnie najwyzszy score i w jakim horyzoncie bedzie sie to utrzymywalo
+    STATYSTYCZNIE"): the t-statistic is the direct, formal measure of
+    whether a pair's monthly edge is distinguishable from noise, which
+    combines both the SIZE of the average edge and the CONSISTENCY of it
+    across the 12 months -- a pair with a large but wildly inconsistent
+    average will score worse here than one with a smaller but highly
+    consistent average, which is exactly the discrimination being asked for.
+
+    Pairs with fewer than 2 usable months (e.g. insufficient price history
+    for the requested train_years + n_months window) are excluded from the
+    output entirely, not included with null placeholders.
+    """
+    rows = []
+    for _, row in pairs_df.iterrows():
+        tA, tB = row["Ticker A"], row["Ticker B"]
+        if tA not in prices_df.columns or tB not in prices_df.columns:
+            continue
+        pair_df = prices_df[[tA, tB]].dropna(how="any")
+        pa, pb = pair_df[tA], pair_df[tB]
+
+        result = simulate_monthly_walkforward(pa, pb, theta=theta, zscore_window=zscore_window,
+                                                train_years=train_years, n_months=n_months, rebalance_days=rebalance_days)
+        if result["n_months"] < 2 or result["t_stat"] is None:
+            continue
+
+        rows.append({
+            "Ticker A": tA, "Ticker B": tB, "N Miesięcy": result["n_months"],
+            "Śr. Alpha Miesięczna [pp]": round(result["mean_alpha"], 4),
+            "Std Alpha Miesięczna [pp]": round(result["std_alpha"], 4),
+            "t-statystyka": round(result["t_stat"], 3),
+            "p-value (t-test)": round(result["p_value"], 4),
+        })
+
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    return out.sort_values("t-statystyka", ascending=False, key=lambda s: s.abs()).reset_index(drop=True)
+
+
+def run_theta_trailing_stability(
+    prices_df: pd.DataFrame, pairs_df: pd.DataFrame,
+    theta: float = DEFAULT_THETA, zscore_window: int = DEFAULT_ZSCORE_WINDOW_MONTHLY,
+    train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY, n_months: int = DEFAULT_N_MONTHS,
+    rebalance_days: int = DEFAULT_REBALANCE_DAYS,
+) -> pd.DataFrame:
+    """
+    Confirmed design (2026-09-08, seventh follow-up): p-value is no longer
+    treated as informative at all here ("nie wiem czy p-value jest tu w
+    ogole przydatne... ciagle gdzies je wrzucasz") -- this function reports
+    NOTHING about cointegration significance. The project owner's own
+    proposed metric, applied here to the theta/monthly production-mechanism
+    prototype specifically ("teraz tylko trzeba to zaimplementowac dla
+    strategii z theta"): take each pair's theta-mechanism monthly result
+    across the trailing `n_months` months (via simulate_monthly_walkforward),
+    but instead of just averaging each pair's OWN raw monthly alpha in
+    isolation, rank pairs AGAINST EACH OTHER separately for EVERY month
+    (percentile rank of that month's raw monthly alpha across the whole
+    candidate batch), giving each pair a TIME SERIES of `n_months`
+    cross-sectional "monthly scores" (0-1, same percentile-rank convention
+    as Composite Score elsewhere in this module). The MEAN of that series
+    is "Trailing Score" (does this pair usually rank well among its peers,
+    month to month); the STD is "Trailing Score Deviation" (how much does
+    that ranking bounce around) -- directly the two numbers requested
+    ("score i odchylenie tego score").
+
+    Pairs are included ONLY if they have a COMPLETE set of `n_months`
+    months (no partial/missing months) -- a fair cross-sectional ranking
+    for a given month requires every included pair to actually have a
+    value for that month; a pair with fewer months (e.g. too close to the
+    start of its available price history) is excluded from this comparison
+    entirely rather than silently ranked against a smaller subset each time.
+
+    Returns
+    -------
+    pd.DataFrame, sorted by "Trailing Score (mean)" descending, columns:
+        "Ticker A", "Ticker B", "Trailing Score (mean)", "Trailing Score (std)", "N Miesięcy"
+    Empty DataFrame if no pair has a complete n_months history.
+    """
+    per_pair_monthly = {}
+    for _, row in pairs_df.iterrows():
+        tA, tB = row["Ticker A"], row["Ticker B"]
+        if tA not in prices_df.columns or tB not in prices_df.columns:
+            continue
+        pair_df = prices_df[[tA, tB]].dropna(how="any")
+        pa, pb = pair_df[tA], pair_df[tB]
+        result = simulate_monthly_walkforward(pa, pb, theta=theta, zscore_window=zscore_window,
+                                                train_years=train_years, n_months=n_months, rebalance_days=rebalance_days)
+        if result["n_months"] == n_months:
+            per_pair_monthly[(tA, tB)] = [d["monthly_alpha_pp"] for d in result["details"]]
+
+    if not per_pair_monthly:
+        return pd.DataFrame()
+
+    pairs_list = list(per_pair_monthly.keys())
+    alpha_matrix = np.array([per_pair_monthly[p] for p in pairs_list])  # (n_pairs, n_months)
+
+    score_matrix = np.zeros_like(alpha_matrix)
+    for month_idx in range(alpha_matrix.shape[1]):
+        score_matrix[:, month_idx] = pd.Series(alpha_matrix[:, month_idx]).rank(pct=True).values
+
+    rows = []
+    for i, (tA, tB) in enumerate(pairs_list):
+        scores = score_matrix[i, :]
+        rows.append({
+            "Ticker A": tA, "Ticker B": tB,
+            "Trailing Score (mean)": round(float(scores.mean()), 4),
+            "Trailing Score (std)": round(float(scores.std(ddof=1)), 4),
+            "N Miesięcy": len(scores),
+        })
+    return pd.DataFrame(rows).sort_values("Trailing Score (mean)", ascending=False).reset_index(drop=True)
+
+
+def simulate_monthly_theta_curve(
+    prices_a: pd.Series, prices_b: pd.Series,
+    theta: float = DEFAULT_THETA, zscore_window: int = DEFAULT_ZSCORE_WINDOW_MONTHLY,
+    train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY, n_months: int = DEFAULT_N_MONTHS,
+    rebalance_days: int = DEFAULT_REBALANCE_DAYS,
+) -> Dict[str, object]:
+    """
+    Daily-resolution equity curve for the theta/monthly production-mechanism
+    prototype, for ONE pair -- confirmed addition (2026-09-08, eighth
+    follow-up): the cross-sectional scatter in the batch tab (Etap 7g)
+    looked like pure noise across hundreds of pairs at once, which the
+    project owner correctly found impossible to build intuition from. This
+    function is the per-pair, visual counterpart: same underlying
+    mechanism as simulate_monthly_walkforward (weight tilted smoothly via
+    `0.5 + 0.5*theta*tanh(-Z)`, Z estimated from a 252-session baseline
+    within the 5-year TRAIN window preceding each month, weight held fixed
+    for the whole ~21-session month), but returning a full DAILY equity
+    curve across the whole test window instead of just 12 summary alpha
+    numbers -- so a single pair's actual month-by-month behavior can be
+    plotted and inspected directly, the same way the discrete
+    threshold-switching chart already lets a person inspect one pair at a
+    time (render_strategy_chart / simulate_pair_strategy).
+
+    Execution is physical-share based (same anti-"Shannon's Demon" logic
+    as simulate_pair_strategy): shares are only re-set at each MONTH
+    BOUNDARY (not daily), to the new month's theta-derived weight; between
+    boundaries the position drifts exactly like a real physical holding
+    with zero reaction, matching how the mechanism is actually meant to run.
+
+    Returns
+    -------
+    dict with keys:
+        "dates"             : list of ISO date strings, one per trading day
+                               across the whole test window
+        "equity_strategy"   : list[float] -- the theta-tilted curve
+        "equity_benchmark"  : list[float] -- passive 50/50 fixed-share Buy & Hold
+        "equity_100a"       : list[float] -- 100% A Buy & Hold
+        "equity_100b"       : list[float] -- 100% B Buy & Hold
+        "weight_a"          : list[float] -- realized weight in A, day by day
+                               (a step function: constant within each month,
+                               jumping only at month boundaries)
+        "month_boundaries"  : list of {"date", "z_score", "weight_a"} -- one
+                               entry per month, for annotating the chart at
+                               exactly the days the mechanism re-evaluated
+        "n_months"          : int, how many months were actually usable
+    Empty lists / n_months=0 if there isn't enough data (same minimum as
+    simulate_monthly_walkforward).
+    """
+    pair_df = pd.DataFrame({"a": prices_a, "b": prices_b}).dropna()
+    if not isinstance(pair_df.index, pd.DatetimeIndex):
+        pair_df = pair_df.copy()
+        pair_df.index = pd.to_datetime(pair_df.index)
+
+    total_test_rows = n_months * rebalance_days
+    if len(pair_df) < total_test_rows + 30:
+        return {"dates": [], "equity_strategy": [], "equity_benchmark": [], "equity_100a": [], "equity_100b": [],
+                "weight_a": [], "month_boundaries": [], "n_months": 0}
+
+    test_start_pos = len(pair_df) - total_test_rows
+    test_slice = pair_df.iloc[test_start_pos:]
+
+    norm_a = (test_slice["a"] / test_slice["a"].iloc[0]) * 100.0
+    norm_b = (test_slice["b"] / test_slice["b"].iloc[0]) * 100.0
+    equity_benchmark = 0.5 * norm_a + 0.5 * norm_b
+
+    shares_a = 50.0 / test_slice["a"].iloc[0]
+    shares_b = 50.0 / test_slice["b"].iloc[0]
+
+    equity_strategy, weight_a_hist = [], []
+    month_boundaries = []
+    usable_months = 0
+
+    for m in range(n_months):
+        month_start_pos = m * rebalance_days
+        month_end_pos = month_start_pos + rebalance_days
+        if month_end_pos > len(test_slice):
+            break
+
+        month_start_date = test_slice.index[month_start_pos]
+        train_boundary_date = month_start_date - pd.DateOffset(years=train_years)
+        train_df = pair_df[(pair_df.index >= train_boundary_date) & (pair_df.index < month_start_date)]
+
+        target_wa = 0.5  # domyslnie neutralnie, jesli za malo danych treningowych na ten miesiac
+        z_this_month = 0.0
+        if len(train_df) >= TRADING_DAYS_2Y:
+            pa_train, pb_train = train_df["a"], train_df["b"]
+            hr_result = _hedge_ratio_and_spread(np.log(pa_train), np.log(pb_train))
+            train_spread = hr_result["spread"]
+            baseline_window = train_spread.iloc[-zscore_window:] if len(train_spread) >= zscore_window else train_spread
+            baseline_std = float(baseline_window.std())
+            if baseline_std > 0 and np.isfinite(baseline_std):
+                z_this_month = (float(train_spread.iloc[-1]) - float(baseline_window.mean())) / baseline_std
+                target_wa = 0.5 + 0.5 * theta * np.tanh(-z_this_month)
+                usable_months += 1
+
+        # Rebalans FIZYCZNY dokladnie na granicy miesiaca (raz), wg nowej wagi
+        pa0 = test_slice["a"].iloc[month_start_pos]
+        pb0 = test_slice["b"].iloc[month_start_pos]
+        port_val = shares_a * pa0 + shares_b * pb0
+        shares_a = (port_val * target_wa) / pa0
+        shares_b = (port_val * (1.0 - target_wa)) / pb0
+
+        month_boundaries.append({"date": month_start_date.strftime("%Y-%m-%d"), "z_score": round(z_this_month, 3), "weight_a": round(target_wa, 3)})
+
+        for day_pos in range(month_start_pos, month_end_pos):
+            pa_t = test_slice["a"].iloc[day_pos]
+            pb_t = test_slice["b"].iloc[day_pos]
+            cur_val = shares_a * pa_t + shares_b * pb_t
+            equity_strategy.append(cur_val)
+            weight_a_hist.append((shares_a * pa_t) / cur_val if cur_val > 0 else 0.5)
+
+    used_rows = len(equity_strategy)
+    dates_used = test_slice.index[:used_rows]
+
+    return {
+        "dates": [d.strftime("%Y-%m-%d") for d in dates_used],
+        "equity_strategy": equity_strategy,
+        "equity_benchmark": list(equity_benchmark.iloc[:used_rows].values),
+        "equity_100a": list(norm_a.iloc[:used_rows].values),
+        "equity_100b": list(norm_b.iloc[:used_rows].values),
+        "weight_a": weight_a_hist,
+        "month_boundaries": month_boundaries,
+        "n_months": usable_months,
+    }

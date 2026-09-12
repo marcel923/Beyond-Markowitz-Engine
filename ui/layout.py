@@ -686,6 +686,42 @@ app.layout = html.Div(style={
                             ]),
                         ]),
                     ]),
+
+                    html.Div(style={"border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px", "marginTop": "16px"}, children=[
+                        html.Div(style={"padding": "12px 20px", "borderBottom": f"1px solid {THEME['border']}", "backgroundColor": THEME["bg_head"]}, children=[
+                            html.Div("TA SAMA PARA -- MECHANIZM THETA (MIESIĘCZNY NUDGE, NIE PROGI 80/20)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div(
+                                "Ten sam wybór pary co powyżej, ale zamiast codziennego przełączania progowego: raz na 21 sesji (hedge ratio i "
+                                "bazowe okno 252 sesji z 5 lat poprzedzających ten miesiąc), płynne przechylenie wagi 0.5 + 0.5·θ·tanh(-Z), "
+                                "trzymane bez zmian przez cały miesiąc. To dokładnie mechanizm oceniany zbiorczo w zakładce \"Trwałość "
+                                "Miesięczna\" -- tutaj widoczny dla JEDNEJ pary na raz, żeby zobaczyć, jak realnie wygląda w czasie.",
+                                style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
+                            ),
+                            html.Div(style={"display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap"}, children=[
+                                html.Div(style={"minWidth": "140px"}, children=[
+                                    html.Div("THETA (siła nudge)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Input(id="relval-theta-input", type="number", value=0.15, min=0.05, max=0.5, step=0.05, style={
+                                        "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
+                                        "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                                    }),
+                                ]),
+                                html.Div(style={"minWidth": "140px"}, children=[
+                                    html.Div("LICZBA MIESIĘCY", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Input(id="relval-theta-nmonths", type="number", value=12, min=2, max=24, step=1, style={
+                                        "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
+                                        "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                                    }),
+                                ]),
+                            ]),
+                        ]),
+                        html.Div(style={"padding": "18px 20px"}, children=[
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                dcc.Graph(id="relval-theta-chart", config={"displayModeBar": False}, style={"height": "620px"}),
+                            ]),
+                        ]),
+                    ]),
                 ]),
             ]),
 
@@ -698,9 +734,10 @@ app.layout = html.Div(style={
                         html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
                             html.Div(
                                 "Odpala pełny backtest (dynamiczna alokacja progowa) dla KAŻDEJ pary z ostatniego skanu uniwersum, niezależnie "
-                                "od tego, czy formalnie przeszła wszystkie 4 bramki -- ranking jest po RZECZYWISTYM wyniku (Alpha vs benchmark "
-                                "50/50), nie po liczbie bramek. Poniżej ranking dołączona jest analiza korelacji: które zmienne (p-value, "
-                                "half-life, hedge ratio, dryf, zmienność spreadu, ten sam sektor) faktycznie tłumaczą, które pary wygrywają. "
+                                "od tego, czy formalnie przeszła wszystkie 3 bramki -- ranking jest po RZECZYWISTYM wyniku (Composite Score: "
+                                "50% Relative Alpha względem najlepszej alternatywy + 50% dni na prowadzeniu), nie po liczbie bramek. Poniżej "
+                                "ranking dołączona jest analiza korelacji: które zmienne (p-value, half-life, hedge ratio, rozbieżność ścieżek, "
+                                "zmienność spreadu, ten sam sektor) faktycznie tłumaczą, które pary wygrywają. "
                                 "Wymaga wcześniejszego uruchomienia skanu w zakładce \"Skaner i Analiza Pary\".",
                                 style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
                             ),
@@ -734,6 +771,105 @@ app.layout = html.Div(style={
                             html.Div("RANKING PAR PO RZECZYWISTYM WYNIKU BACKTESTU", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
                             dcc.Loading(type="circle", color=THEME["accent"], children=[
                                 html.Div(id="relval-batch-table"),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+
+            dcc.Tab(label="WALIDACJA OUT-OF-SAMPLE", value="relval-tab-oos", style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE, children=[
+                html.Div(style={"paddingTop": "16px"}, children=[
+                    html.Div(style={"border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px"}, children=[
+                        html.Div(style={"padding": "12px 20px", "borderBottom": f"1px solid {THEME['border']}", "backgroundColor": THEME["bg_head"]}, children=[
+                            html.Div("WALK-FORWARD -- CZY PRZEWAGA SIĘ UTRZYMUJE POZA PRÓBĄ?", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div(
+                                "Dzieli dane na okres TRENINGOWY (pierwsze lata) i TESTOWY (ostatni rok, domyślnie). Hedge ratio i wszystkie "
+                                "bramki liczone są WYŁĄCZNIE na treningu -- rok testowy nigdy nie wpływa na dobór parametrów pary, dokładnie "
+                                "tak jak w prawdziwym, żywym systemie. Composite Score liczony jest NIEZALEŻNIE dla obu okresów (osobny ranking "
+                                "in-sample i osobny out-of-sample), żeby zobaczyć, czy WZGLĘDNA pozycja pary wśród innych par utrzymuje się, "
+                                "czy była przypadkowym dopasowaniem do konkretnego okresu. Dodatkowo test kointegracji jest powtórzony na samym "
+                                "roku testowym, z hedge ratio wciąż zamrożonym z treningu. Wymaga wcześniejszego skanu w pierwszej zakładce.",
+                                style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
+                            ),
+                            html.Div(style={"display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap"}, children=[
+                                html.Div(style={"minWidth": "220px"}, children=[
+                                    html.Div("MINIMALNA LICZBA BRAMEK (TRENING)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Dropdown(id="relval-oos-min-gates", clearable=False, value=1, options=[
+                                        {"label": f"{n} / 3 lub więcej", "value": n} for n in [1, 2, 3]
+                                    ]),
+                                ]),
+                                html.Div(style={"minWidth": "160px"}, children=[
+                                    html.Div("DŁUGOŚĆ OKRESU TESTOWEGO [LATA]", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Input(id="relval-oos-test-years", type="number", value=1, min=0.5, max=2, step=0.5, style={
+                                        "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
+                                        "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                                    }),
+                                ]),
+                                html.Button("URUCHOM WALIDACJĘ", id="btn-relval-oos-run", n_clicks=0, style={
+                                    "padding": "10px 20px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                                    "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer", "height": "38px"
+                                }),
+                            ]),
+                            html.Div(id="relval-oos-status", style={"marginTop": "10px", "fontSize": "12px"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px"}, children=[
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                html.Div(id="relval-oos-table"),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+
+            dcc.Tab(label="TRWAŁOŚĆ MIESIĘCZNA (SCORE + WYKRES)", value="relval-tab-monthly", style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE, children=[
+                html.Div(style={"paddingTop": "16px"}, children=[
+                    html.Div(style={"border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px"}, children=[
+                        html.Div(style={"padding": "12px 20px", "borderBottom": f"1px solid {THEME['border']}", "backgroundColor": THEME["bg_head"]}, children=[
+                            html.Div("PROTOTYP MECHANIZMU PRODUKCYJNEGO -- MIESIĘCZNY NUDGE, NIE CODZIENNE PROGI", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div(
+                                "Raz na 21 sesji sprawdzamy Z-score (hedge ratio i bazowe okno 252 sesji, wyestymowane WYŁĄCZNIE z 5 lat "
+                                "poprzedzających ten miesiąc), płynnie przechylamy wagę wzorem 0.5 + 0.5·θ·tanh(-Z), trzymamy bez zmian przez "
+                                "cały miesiąc. Wykres: oś X = Composite Score in-sample (5-letni trening, metoda progowa z zakładki OOS), "
+                                "oś Y = średni Score z ostatnich 12 miesięcy metodą theta (ranking względem innych par w KAŻDYM miesiącu "
+                                "osobno), słupki błędu = odchylenie standardowe tego miesięcznego Score. Szukaj par w prawym górnym rogu, "
+                                "z KRÓTKIMI słupkami błędu -- wysoki i stabilny wynik w obu oknach czasowych. p-value nie jest tu nigdzie "
+                                "używane. Wymaga wcześniejszego skanu w pierwszej zakładce.",
+                                style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
+                            ),
+                            html.Div(style={"display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap"}, children=[
+                                html.Div(style={"minWidth": "180px"}, children=[
+                                    html.Div("MINIMALNA LICZBA BRAMEK", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Dropdown(id="relval-monthly-min-gates", clearable=False, value=1, options=[
+                                        {"label": f"{n} / 3 lub więcej", "value": n} for n in [1, 2, 3]
+                                    ]),
+                                ]),
+                                html.Div(style={"minWidth": "140px"}, children=[
+                                    html.Div("THETA (siła nudge)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Input(id="relval-monthly-theta", type="number", value=0.15, min=0.05, max=0.5, step=0.05, style={
+                                        "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
+                                        "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                                    }),
+                                ]),
+                                html.Button("URUCHOM ANALIZĘ STABILNOŚCI", id="btn-relval-monthly-run", n_clicks=0, style={
+                                    "padding": "10px 20px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                                    "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer", "height": "38px"
+                                }),
+                            ]),
+                            html.Div(id="relval-monthly-status", style={"marginTop": "10px", "fontSize": "12px"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                dcc.Graph(id="relval-monthly-scatter", config={"displayModeBar": False}, style={"height": "560px"}),
+                            ]),
+                        ]),
+                        html.Div(style={"padding": "18px 20px"}, children=[
+                            html.Div("SZCZEGÓŁY (posortowane po Trailing Score)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                html.Div(id="relval-monthly-table"),
                             ]),
                         ]),
                     ]),
