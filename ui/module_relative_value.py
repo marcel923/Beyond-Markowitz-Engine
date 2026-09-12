@@ -31,6 +31,7 @@ this file imports engine/ and data/, neither of those ever imports back).
 """
 from datetime import date
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -45,7 +46,8 @@ from data.market_data import fetch_universe_prices
 from engine.pairs import (
     scan_universe_diagnostics, evaluate_pair_diagnostics, simulate_pair_strategy,
     run_backtest_batch, compute_correlations, run_walk_forward_validation,
-    run_theta_trailing_stability, simulate_monthly_theta_curve,
+    run_theta_trailing_stability, simulate_monthly_theta_curve, run_monthly_walkforward_batch,
+    compute_pooled_significance, compare_window_lengths,
 )
 
 
@@ -70,6 +72,34 @@ def _failed_tickers_note(requested, valid):
         return None
     return html.Div(f"Nie udało się pobrać danych dla: {', '.join(missing)} (sprawdź, czy są w uniwersum i czy yfinance ma dla nich dane).",
                      style={"color": THEME["warn"], "marginTop": "4px"})
+
+
+GATE_SCREENING_YEARS = 5  # okno uzywane WYLACZNIE do scan_universe_diagnostics -- musi byc identyczne
+                          # we wszystkich zakladkach modulu, niezaleznie od tego, ile lat historii
+                          # pobrano dla samego backtestu miesiecznego (patrz nizej).
+
+
+def _screening_slice(prices_df):
+    """
+    Wycina ostatnie GATE_SCREENING_YEARS (5) lat z dluzszego (np. 10-letniego)
+    zakresu cen -- confirmed fix (2026-09-08, dwunasty follow-up): realna
+    niespojnosc zostala znaleziona i potwierdzona -- Zakladka 1 zawsze
+    liczyla bramki (p-value, half-life, hedge ratio, rozbieznosc) na 5-letnim
+    oknie, ale po rozszerzeniu pobierania danych do 10 lat (Etap 7k, dla
+    obslugi do 48 miesiecy backtestu), Zakladki 4 i 5 zaczely SCIAGAC te same
+    bramki z 10-letniego okna -- test kointegracji na dluzszym oknie jest z
+    natury surowszy (relacja musi byc stabilna DLUZEJ, zeby przejsc), wiec
+    "3/3 bramek" przestalo znaczyc to samo w roznych zakladkach (potwierdzone:
+    19 par na 5-letnim oknie vs tylko 5 na 10-letnim, dla tego samego
+    uniwersum i tego samego dnia). Bramki musza byc liczone SPOJNIE wszedzie
+    -- ta funkcja wycina z JUZ pobranych (10-letnich) danych dokladnie taki
+    sam 5-letni "ogon", jaki dostalaby swiezo wykonana 5-letnia zapytanie,
+    bez robienia drugiego zapytania sieciowego.
+    """
+    if prices_df.empty:
+        return prices_df
+    boundary = prices_df.index[-1] - pd.DateOffset(years=GATE_SCREENING_YEARS)
+    return prices_df[prices_df.index >= boundary]
 
 
 @app.callback(
@@ -193,7 +223,7 @@ def analyze_pair(_n_clicks, ticker_a, ticker_b):
     if ticker_a == ticker_b:
         return html.Div("Wybierz dwie RÓŻNE spółki.", style={"color": THEME["neg"]}), None
 
-    prices_df, valid = fetch_universe_prices([ticker_a, ticker_b], period="5y")
+    prices_df, valid = fetch_universe_prices([ticker_a, ticker_b], period="10y")
     if prices_df.empty or ticker_a not in valid or ticker_b not in valid:
         return html.Div(f"Nie udało się pobrać danych cenowych dla {ticker_a}/{ticker_b}.", style={"color": THEME["neg"]}), None
 
@@ -575,7 +605,7 @@ def run_oos_validation(_n_clicks, min_gates, test_years, entry_z, exit_z, favour
         msgs = [html.Div("Nie udało się pobrać danych cenowych dla uniwersum.", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
         return html.Div(), html.Div(msgs)
 
-    full_scan = scan_universe_diagnostics(prices_df, tickers=valid_tickers)
+    full_scan = scan_universe_diagnostics(_screening_slice(prices_df), tickers=valid_tickers)
     candidate_pairs = full_scan[full_scan["Gates Passed"] >= min_gates]
     if candidate_pairs.empty:
         msgs = [html.Div(f"Żadna para nie ma co najmniej {min_gates}/3 bramek na pełnym 6-letnim oknie.", style={"color": THEME["warn"]})] + ([failed_note] if failed_note else [])
@@ -640,10 +670,10 @@ STABILITY_THRESHOLD = 0.8  # confirmed empirycznie przez wlasciciela projektu
     Output("relval-monthly-table", "children"),
     Output("relval-monthly-status", "children"),
     Input("btn-relval-monthly-run", "n_clicks"),
-    State("relval-monthly-min-gates", "value"), State("relval-monthly-theta", "value"),
+    State("relval-monthly-min-gates", "value"), State("relval-monthly-theta", "value"), State("relval-monthly-nmonths", "value"),
     prevent_initial_call=True,
 )
-def run_monthly_persistence_test(_n_clicks, min_gates, theta):
+def run_monthly_persistence_test(_n_clicks, min_gates, theta, n_months):
     """
     Self-contained, fetches 6Y fresh (5Y train + up to 12 test months),
     matching the pattern of the other three sub-tabs. Candidate pairs come
@@ -673,26 +703,27 @@ def run_monthly_persistence_test(_n_clicks, min_gates, theta):
     axes plus a distinct marker color for pairs clearing both.
     """
     theta = theta or 0.15
+    n_months = int(n_months) if n_months else 12
 
     tickers = [c["Ticker"] for c in uni.list_companies()]
     empty_fig = go.Figure()
     if len(tickers) < 2:
         return empty_fig, html.Div(), html.Div("Uniwersum ma mniej niż 2 spółki.", style={"color": THEME["neg"]})
 
-    prices_df, valid_tickers = fetch_universe_prices(tickers, period="6y")
+    prices_df, valid_tickers = fetch_universe_prices(tickers, period="10y")
     failed_note = _failed_tickers_note(tickers, valid_tickers)
     if prices_df.empty or len(valid_tickers) < 2:
         msgs = [html.Div("Nie udało się pobrać danych cenowych dla uniwersum.", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
         return empty_fig, html.Div(), html.Div(msgs)
 
-    full_scan = scan_universe_diagnostics(prices_df, tickers=valid_tickers)
+    full_scan = scan_universe_diagnostics(_screening_slice(prices_df), tickers=valid_tickers)
     candidate_pairs = full_scan[full_scan["Gates Passed"] >= min_gates]
     if candidate_pairs.empty:
         msgs = [html.Div(f"Żadna para nie ma co najmniej {min_gates}/3 bramek.", style={"color": THEME["warn"]})] + ([failed_note] if failed_note else [])
         return empty_fig, html.Div(), html.Div(msgs)
 
     is_scores = run_walk_forward_validation(prices_df, candidate_pairs, test_years=1)
-    trailing_scores = run_theta_trailing_stability(prices_df, candidate_pairs, theta=theta)
+    trailing_scores = run_theta_trailing_stability(prices_df, candidate_pairs, theta=theta, n_months=n_months)
 
     if is_scores.empty or trailing_scores.empty:
         msgs = [html.Div("Za mało wspólnej historii, żeby policzyć zarówno IS Score, jak i Trailing Score dla którejkolwiek pary.", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
@@ -754,9 +785,307 @@ def run_monthly_persistence_test(_n_clicks, min_gates, theta):
     n_both_high = int(merged["Oba > 0.8"].sum())
     status = html.Div([
         html.Div(
-            f"Policzono {len(merged)} par (theta={theta}, IS=5 lat treningu, Trailing=12 miesięcy) -- "
+            f"Policzono {len(merged)} par (theta={theta}, IS=5 lat treningu, Trailing={n_months} miesięcy) -- "
             f"{n_both_high} z {len(merged)} par ma Score > {STABILITY_THRESHOLD} w OBU oknach czasowych.",
             style={"color": THEME["pos"] if n_both_high else THEME["text_dim"]}
         ),
+    ] + ([failed_note] if failed_note else []))
+    return fig, table, status
+
+
+# ---------------------------------------------------------------------------
+# Sekcja 6 (piata zakladka modulu): "Analiza Wsteczna Theta (Batch)" --
+# odpowiednik zakladki 2 (Backtest Attribution), ale mechanizmem theta
+# (co 21 sesji, plynny tanh-nudge) zamiast dynamicznej alokacji progowej.
+# Confirmed 2026-09-08 (dziewiaty follow-up): wlasciciel projektu zauwazyl
+# ze pary "pamieciowe" (WDC/000660.KS itp.) nie daja tu przewagi, za to pary
+# spelniajace wszystkie 3 bramki daja umiarkowany, ale POWTARZALNY wynik,
+# ktory rosnie wraz z theta -- ta zakladka mierzy to systematycznie zamiast
+# na pojedynczych parach.
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("relval-thetabatch-correlations", "children"),
+    Output("relval-thetabatch-scatter", "figure"),
+    Output("relval-thetabatch-halflife-scatter", "figure"),
+    Output("relval-thetabatch-cumulative-scatter", "figure"),
+    Output("relval-thetabatch-pooled", "children"),
+    Output("relval-thetabatch-table", "children"),
+    Output("relval-thetabatch-status", "children"),
+    Input("btn-relval-thetabatch-run", "n_clicks"),
+    State("relval-thetabatch-min-gates", "value"), State("relval-thetabatch-theta", "value"), State("relval-thetabatch-nmonths", "value"),
+    prevent_initial_call=True,
+)
+def run_theta_batch_attribution(_n_clicks, min_gates, theta, n_months):
+    """
+    Mirrors run_batch_attribution (Tab 2) structurally -- same correlation-bar
+    + scatter + ranked-table layout -- but powered by
+    engine.pairs.run_monthly_walkforward_batch (theta/monthly mechanism)
+    instead of run_backtest_batch (discrete 80/20-style mechanism).
+    Self-contained (re-fetches + re-scans), matching the established
+    pattern for every sub-tab in this module. Tab 2 itself is intentionally
+    left untouched by this whole feature (confirmed 2026-09-08, tenth
+    follow-up: "pamietaj co do punktu 3 ze to ma isc do zakladki 5 a nie do
+    drugiej, drugiej nie ruszaj niech bedzie jaka jest").
+
+    Correlation target is "Śr. Alpha Miesięczna [pp]" (mean monthly alpha
+    under theta) rather than the discrete mechanism's "Relative Alpha [%]"
+    -- these are different quantities on different scales (a per-month
+    average vs. a cumulative multi-year ratio) and should not be confused
+    with each other or compared directly across tabs.
+
+    Second scatter (half-life vs t-statistic) tests a specific hypothesis
+    raised by the project owner after observing all-negative correlations
+    here despite Tab 1's per-pair chart looking consistently good for
+    fully-qualifying pairs: half-life near the gate's upper bound (63
+    sessions) may sit too close to a unit root for the 252-session Z-score
+    baseline to capture a genuinely stable equilibrium -- the exact failure
+    mode already documented when this mechanism was first built (Etap 7f).
+
+    Pooled significance panel ("Opcja B", confirmed 2026-09-08 eleventh
+    follow-up): pools every (pair, month) raw alpha value from the SAME
+    filtered candidate set already shown below (respecting min_gates --
+    NOT the unfiltered universe) into one array and runs a single t-test
+    on it. Answers "does the mechanism have a systematic effect across
+    this set" rather than "does any one pair", with far more statistical
+    power than any individual pair's own n_months-sized test can offer.
+    """
+    theta = theta or 0.15
+    n_months = int(n_months) if n_months else 12
+
+    tickers = [c["Ticker"] for c in uni.list_companies()]
+    empty_fig = go.Figure()
+    if len(tickers) < 2:
+        return html.Div(), empty_fig, empty_fig, empty_fig, html.Div(), html.Div(), html.Div("Uniwersum ma mniej niż 2 spółki.", style={"color": THEME["neg"]})
+
+    prices_df, valid_tickers = fetch_universe_prices(tickers, period="10y")
+    failed_note = _failed_tickers_note(tickers, valid_tickers)
+    if prices_df.empty or len(valid_tickers) < 2:
+        msgs = [html.Div("Nie udało się pobrać danych cenowych dla uniwersum.", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
+        return html.Div(), empty_fig, empty_fig, empty_fig, html.Div(), html.Div(), html.Div(msgs)
+
+    full_scan = scan_universe_diagnostics(_screening_slice(prices_df), tickers=valid_tickers)
+    candidate_pairs = full_scan[full_scan["Gates Passed"] >= min_gates]
+    if candidate_pairs.empty:
+        msgs = [html.Div(f"Żadna para nie ma co najmniej {min_gates}/3 bramek.", style={"color": THEME["warn"]})] + ([failed_note] if failed_note else [])
+        return html.Div(), empty_fig, empty_fig, empty_fig, html.Div(), html.Div(), html.Div(msgs)
+
+    batch, pooled_alphas = run_monthly_walkforward_batch(prices_df, candidate_pairs, theta=theta, n_months=n_months)
+    if batch.empty:
+        msgs = [html.Div(f"Żadnej parze nie udało się policzyć pełnych {n_months} miesięcy (za mało wspólnej historii).", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
+        return html.Div(), empty_fig, empty_fig, empty_fig, html.Div(), html.Div(), html.Div(msgs)
+
+    pooled = compute_pooled_significance(pooled_alphas)
+    if pooled["t_stat"] is None:
+        pooled_display = html.Div("Za mało pulowanych obserwacji, żeby policzyć test zbiorczy.", style={"color": THEME["text_dim"]})
+    else:
+        pooled_significant = pooled["p_value"] < 0.05
+        pooled_display = html.Div([
+            html.Span(f"n = {pooled['n']} obserwacji (pary × miesiące) -- ", style={"color": THEME["text_dim"]}),
+            html.Span(f"średnia = {pooled['mean']:+.4f} p.p./miesiąc, ", style={"color": THEME["text_white"]}),
+            html.Span(f"t-statystyka = {pooled['t_stat']:+.3f}, ", style={"color": THEME["pos"] if pooled_significant else THEME["text_white"]}),
+            html.Span(f"p-value = {pooled['p_value']:.6f}", style={"color": THEME["pos"] if pooled_significant else THEME["warn"], "fontWeight": "700"}),
+        ])
+
+    sector_by_ticker = {c["Ticker"]: c.get("Sector", "") for c in uni.list_companies()}
+    batch["Same Sector"] = batch.apply(
+        lambda r: int(bool(sector_by_ticker.get(r["Ticker A"])) and sector_by_ticker.get(r["Ticker A"]) == sector_by_ticker.get(r["Ticker B"])),
+        axis=1
+    )
+
+    correlations = compute_correlations(batch, target_col="Śr. Alpha Miesięczna [pp]", candidate_cols=CORRELATION_CANDIDATE_COLS)
+    if correlations.empty:
+        corr_display = html.Div("Za mało zróżnicowanych par, żeby policzyć sensowną korelację.", style={"fontSize": "12px", "color": THEME["text_dim"]})
+    else:
+        corr_display = html.Div([
+            html.Div(
+                "Dodatnia korelacja = wyższa wartość tej zmiennej idzie w parze z wyższą średnią miesięczną Alpha MECHANIZMU THETA. "
+                "To może się różnić od tego, co tłumaczyło skuteczność mechanizmu progowego w zakładce 2 -- to inny mechanizm, inny wynik.",
+                style={"fontSize": "11px", "color": THEME["text_dim"], "marginBottom": "14px", "fontStyle": "italic"}
+            ),
+            html.Div([_correlation_bar(name, val) for name, val in correlations.items()]),
+        ])
+
+    scatter_fig = go.Figure()
+    for same_sector, label, color in [(1, "Ten sam sektor", THEME["accent"]), (0, "Różny sektor", THEME["text_dim"])]:
+        subset = batch[batch["Same Sector"] == same_sector]
+        if subset.empty:
+            continue
+        scatter_fig.add_trace(go.Scatter(
+            x=subset["P-Value"], y=subset["Śr. Alpha Miesięczna [pp]"], mode="markers", name=label,
+            marker=dict(size=10, color=color, line=dict(width=1, color=THEME["bg_base"])),
+            text=[f"{a}/{b}" for a, b in zip(subset["Ticker A"], subset["Ticker B"])],
+            hovertemplate="%{text}<br>p-value=%{x:.4f}<br>Śr. Alpha mies.=%{y:+.3f}pp<extra></extra>",
+        ))
+    scatter_fig.add_vline(x=0.05, line=dict(color=THEME["warn"], dash="dot"), annotation_text="próg p=0.05")
+    scatter_fig.add_hline(y=0.0, line=dict(color=THEME["border_strong"], dash="dash"))
+    scatter_fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        margin=dict(l=50, r=30, t=20, b=40), font_family=THEME["font"],
+        legend=dict(orientation="h", y=1.1, font=dict(size=10, color=THEME["text_dim"])),
+        xaxis=dict(title="p-value (skala log)", type="log", showgrid=False, tickfont=dict(color=THEME["text_dim"], size=10)),
+        yaxis=dict(title="Śr. Alpha Miesięczna [p.p.] (mechanizm theta)", showgrid=True, gridcolor=THEME["border"], tickfont=dict(color=THEME["text_dim"], size=10)),
+    )
+
+    halflife_fig = go.Figure()
+    halflife_fig.add_trace(go.Scatter(
+        x=batch["Half-Life"], y=batch["t-statystyka"], mode="markers",
+        marker=dict(size=10, color=THEME["accent"], line=dict(width=1, color=THEME["bg_base"])),
+        text=[f"{a}/{b}" for a, b in zip(batch["Ticker A"], batch["Ticker B"])],
+        hovertemplate="%{text}<br>Half-Life=%{x:.1f} sesji<br>t-stat=%{y:+.3f}<extra></extra>",
+        showlegend=False,
+    ))
+    halflife_fig.add_hline(y=0.0, line=dict(color=THEME["border_strong"], dash="dash"))
+    halflife_fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        margin=dict(l=50, r=30, t=20, b=40), font_family=THEME["font"],
+        xaxis=dict(title="Half-Life [sesje]", showgrid=False, tickfont=dict(color=THEME["text_dim"], size=10)),
+        yaxis=dict(title="t-statystyka (mechanizm theta)", showgrid=True, gridcolor=THEME["border"], tickfont=dict(color=THEME["text_dim"], size=10)),
+    )
+
+    cumulative_fig = go.Figure()
+    cumulative_fig.add_trace(go.Scatter(
+        x=batch["Śr. Alpha Miesięczna [pp]"], y=batch["Zwrot Skumulowany [pp]"], mode="markers",
+        marker=dict(size=10, color=THEME["accent"], line=dict(width=1, color=THEME["bg_base"])),
+        text=[f"{a}/{b}" for a, b in zip(batch["Ticker A"], batch["Ticker B"])],
+        hovertemplate="%{text}<br>Śr. Alpha mies.=%{x:+.3f}pp<br>Zwrot skum.=%{y:+.2f}pp<extra></extra>",
+        showlegend=False,
+    ))
+    # linia odniesienia: gdyby skladanie bylo idealnie liniowe (brak efektu kolejnosci zwrotow),
+    # zwrot skumulowany bylby w przyblizeniu srednia*n_months -- rysujemy to jako punkt odniesienia,
+    # nie jako model, zeby pokazac jak bardzo (albo jak malo) rzeczywiste skladanie od tego odbiega.
+    if len(batch) > 0:
+        x_range = np.array([batch["Śr. Alpha Miesięczna [pp]"].min(), batch["Śr. Alpha Miesięczna [pp]"].max()])
+        cumulative_fig.add_trace(go.Scatter(
+            x=x_range, y=x_range * n_months, mode="lines", name=f"Naiwne x{n_months} (bez składania)",
+            line=dict(color=THEME["text_dim"], width=1, dash="dash"),
+        ))
+    cumulative_fig.add_hline(y=0.0, line=dict(color=THEME["border_strong"], dash="dash"))
+    cumulative_fig.add_vline(x=0.0, line=dict(color=THEME["border_strong"], dash="dash"))
+    cumulative_fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        margin=dict(l=50, r=30, t=20, b=40), font_family=THEME["font"],
+        legend=dict(orientation="h", y=1.12, font=dict(size=10, color=THEME["text_dim"])),
+        xaxis=dict(title="Śr. Alpha Miesięczna [p.p.]", showgrid=True, gridcolor=THEME["border"], tickfont=dict(color=THEME["text_dim"], size=10)),
+        yaxis=dict(title="Zwrot Skumulowany [p.p.] (prawdziwe składanie)", showgrid=True, gridcolor=THEME["border"], tickfont=dict(color=THEME["text_dim"], size=10)),
+    )
+
+    display_df = batch.copy()
+    display_df["Sektor"] = display_df["Same Sector"].map({1: "Ten sam", 0: "Różny"})
+    display_df["Bramki"] = display_df["Gates Passed"].astype(str) + " / 3"
+    table = dash_table.DataTable(
+        columns=[
+            {"name": "Spółka A", "id": "Ticker A"}, {"name": "Spółka B", "id": "Ticker B"},
+            {"name": "t-statystyka", "id": "t-statystyka", "type": "numeric", "format": {"specifier": "+.3f"}},
+            {"name": "p-value (t-test)", "id": "p-value (t-test)", "type": "numeric", "format": {"specifier": ".4f"}},
+            {"name": f"Zwrot Skum. {n_months}M [pp]", "id": "Zwrot Skumulowany [pp]", "type": "numeric", "format": {"specifier": "+.2f"}},
+            {"name": "% Miesięcy > 50/50", "id": "% Miesięcy > 50/50", "type": "numeric", "format": {"specifier": ".1f"}},
+            {"name": "Śr. Alpha Mies. [pp]", "id": "Śr. Alpha Miesięczna [pp]", "type": "numeric", "format": {"specifier": "+.3f"}},
+            {"name": "Std Alpha Mies. [pp]", "id": "Std Alpha Miesięczna [pp]", "type": "numeric", "format": {"specifier": ".3f"}},
+            {"name": "Bramki", "id": "Bramki"}, {"name": "Sektor", "id": "Sektor"},
+            {"name": "p-value (kointegracja)", "id": "P-Value", "type": "numeric", "format": {"specifier": ".5f"}},
+            {"name": "Half-Life", "id": "Half-Life", "type": "numeric", "format": {"specifier": ".1f"}},
+            {"name": "Hedge Ratio", "id": "Hedge Ratio", "type": "numeric", "format": {"specifier": ".3f"}},
+        ],
+        data=display_df.to_dict("records"), page_size=25, sort_action="native", filter_action="native",
+        style_header=datatable_style_header(), style_data=datatable_style_data(), style_cell=datatable_style_cell(),
+        style_cell_conditional=[{"if": {"column_id": c}, "fontWeight": "bold", "color": THEME["accent"]} for c in ["Ticker A", "Ticker B"]],
+        style_data_conditional=[
+            datatable_row_alt_rule(),
+            {"if": {"filter_query": "{p-value (t-test)} < 0.05", "column_id": "p-value (t-test)"}, "color": THEME["pos"], "fontWeight": "bold"},
+            {"if": {"filter_query": "{Zwrot Skumulowany [pp]} > 0", "column_id": "Zwrot Skumulowany [pp]"}, "color": THEME["pos"]},
+            {"if": {"filter_query": "{Zwrot Skumulowany [pp]} < 0", "column_id": "Zwrot Skumulowany [pp]"}, "color": THEME["neg"]},
+        ],
+    )
+
+    n_significant = int((batch["p-value (t-test)"] < 0.05).sum())
+    status = html.Div([
+        html.Div(
+            f"Przebacktestowano {len(batch)} par mechanizmem theta (θ={theta}, min. {min_gates}/3 bramek, {n_months} miesięcy) -- "
+            f"{n_significant} z {len(batch)} par ma statystycznie istotną (p<0.05) miesięczną przewagę. "
+            f"Najlepsza wg |t-statystyki|: {batch.iloc[0]['Ticker A']}/{batch.iloc[0]['Ticker B']}.",
+            style={"color": THEME["pos"] if n_significant else THEME["text_dim"]}
+        ),
+    ] + ([failed_note] if failed_note else []))
+    return corr_display, scatter_fig, halflife_fig, cumulative_fig, pooled_display, table, status
+
+
+# ---------------------------------------------------------------------------
+# Sekcja 7 (szosta zakladka modulu): Window-Length Comparison -- 1x48 vs
+# 2x24 vs 3x16, confirmed experiment 2026-09-08 (czternasty follow-up).
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("relval-wincompare-chart", "figure"),
+    Output("relval-wincompare-table", "children"),
+    Output("relval-wincompare-status", "children"),
+    Input("btn-relval-wincompare-run", "n_clicks"),
+    State("relval-wincompare-min-gates", "value"), State("relval-wincompare-theta", "value"),
+    prevent_initial_call=True,
+)
+def run_window_length_comparison(_n_clicks, min_gates, theta):
+    """
+    Self-contained (fetches 10Y fresh, screens gates on a 5Y slice via
+    _screening_slice -- same consistency fix as the other tabs), matching
+    the established pattern. Runs engine.pairs.compare_window_lengths on
+    the SAME gate-filtered candidate pairs used elsewhere in this module.
+    """
+    theta = theta or 0.15
+
+    tickers = [c["Ticker"] for c in uni.list_companies()]
+    empty_fig = go.Figure()
+    if len(tickers) < 2:
+        return empty_fig, html.Div(), html.Div("Uniwersum ma mniej niż 2 spółki.", style={"color": THEME["neg"]})
+
+    prices_df, valid_tickers = fetch_universe_prices(tickers, period="10y")
+    failed_note = _failed_tickers_note(tickers, valid_tickers)
+    if prices_df.empty or len(valid_tickers) < 2:
+        msgs = [html.Div("Nie udało się pobrać danych cenowych dla uniwersum.", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
+        return empty_fig, html.Div(), html.Div(msgs)
+
+    full_scan = scan_universe_diagnostics(_screening_slice(prices_df), tickers=valid_tickers)
+    candidate_pairs = full_scan[full_scan["Gates Passed"] >= min_gates]
+    if candidate_pairs.empty:
+        msgs = [html.Div(f"Żadna para nie ma co najmniej {min_gates}/3 bramek.", style={"color": THEME["warn"]})] + ([failed_note] if failed_note else [])
+        return empty_fig, html.Div(), html.Div(msgs)
+
+    detail, summary = compare_window_lengths(prices_df, candidate_pairs, theta=theta)
+    if summary.empty or summary["N Par"].sum() == 0:
+        msgs = [html.Div("Żadnej parze nie udało się policzyć żadnego wariantu (za mało wspólnej historii).", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
+        return empty_fig, html.Div(), html.Div(msgs)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=summary["Wariant"], y=summary["Śr. |t-statystyka|"], name="Śr. |t-statystyka|",
+                          marker_color=THEME["accent"], yaxis="y1"))
+    fig.add_trace(go.Scatter(x=summary["Wariant"], y=summary["% Istotnych (p<0.05)"], name="% Istotnych (p<0.05)",
+                              mode="lines+markers", marker=dict(size=10, color=THEME["pos"]), line=dict(color=THEME["pos"], width=2), yaxis="y2"))
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        margin=dict(l=50, r=50, t=20, b=40), font_family=THEME["font"],
+        legend=dict(orientation="h", y=1.1, font=dict(size=10, color=THEME["text_dim"])),
+        xaxis=dict(tickfont=dict(color=THEME["text_dim"], size=11)),
+        yaxis=dict(title="Śr. |t-statystyka|", showgrid=True, gridcolor=THEME["border"], tickfont=dict(color=THEME["text_dim"], size=10)),
+        yaxis2=dict(title="% Istotnych", overlaying="y", side="right", range=[0, 100], tickfont=dict(color=THEME["text_dim"], size=10)),
+    )
+
+    table = dash_table.DataTable(
+        columns=[
+            {"name": "Wariant", "id": "Wariant"}, {"name": "Spółka A", "id": "Ticker A"}, {"name": "Spółka B", "id": "Ticker B"},
+            {"name": "t-statystyka", "id": "t-statystyka", "type": "numeric", "format": {"specifier": "+.3f"}},
+            {"name": "p-value", "id": "p-value (t-test)", "type": "numeric", "format": {"specifier": ".4f"}},
+            {"name": "Śr. Alpha [pp]", "id": "Śr. Alpha Miesięczna [pp]", "type": "numeric", "format": {"specifier": "+.3f"}},
+            {"name": "Std Alpha [pp]", "id": "Std Alpha Miesięczna [pp]", "type": "numeric", "format": {"specifier": ".3f"}},
+            {"name": "N Miesięcy", "id": "N Miesięcy"},
+        ],
+        data=detail.to_dict("records"), page_size=25, sort_action="native", filter_action="native",
+        style_header=datatable_style_header(), style_data=datatable_style_data(), style_cell=datatable_style_cell(),
+        style_cell_conditional=[{"if": {"column_id": c}, "fontWeight": "bold", "color": THEME["accent"]} for c in ["Ticker A", "Ticker B", "Wariant"]],
+        style_data_conditional=[datatable_row_alt_rule()],
+    )
+
+    best_variant = summary.loc[summary["Śr. |t-statystyka|"].idxmax(), "Wariant"] if summary["Śr. |t-statystyka|"].notna().any() else "brak"
+    status = html.Div([
+        html.Div(f"Porównano 3 warianty na {candidate_pairs.shape[0]} parach kandydujących -- najstabilniejszy wg średniej |t-statystyki|: {best_variant}.",
+                 style={"color": THEME["pos"]}),
     ] + ([failed_note] if failed_note else []))
     return fig, table, status

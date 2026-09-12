@@ -709,7 +709,7 @@ app.layout = html.Div(style={
                                 ]),
                                 html.Div(style={"minWidth": "140px"}, children=[
                                     html.Div("LICZBA MIESIĘCY", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
-                                    dcc.Input(id="relval-theta-nmonths", type="number", value=12, min=2, max=24, step=1, style={
+                                    dcc.Input(id="relval-theta-nmonths", type="number", value=12, min=2, max=48, step=1, style={
                                         "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
                                         "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
                                     }),
@@ -854,6 +854,13 @@ app.layout = html.Div(style={
                                         "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
                                     }),
                                 ]),
+                                html.Div(style={"minWidth": "140px"}, children=[
+                                    html.Div("LICZBA MIESIĘCY (max 48)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Input(id="relval-monthly-nmonths", type="number", value=12, min=2, max=48, step=1, style={
+                                        "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
+                                        "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                                    }),
+                                ]),
                                 html.Button("URUCHOM ANALIZĘ STABILNOŚCI", id="btn-relval-monthly-run", n_clicks=0, style={
                                     "padding": "10px 20px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
                                     "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer", "height": "38px"
@@ -870,6 +877,173 @@ app.layout = html.Div(style={
                             html.Div("SZCZEGÓŁY (posortowane po Trailing Score)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
                             dcc.Loading(type="circle", color=THEME["accent"], children=[
                                 html.Div(id="relval-monthly-table"),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+
+            dcc.Tab(label="ANALIZA WSTECZNA THETA (BATCH)", value="relval-tab-theta-batch", style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE, children=[
+                html.Div(style={"paddingTop": "16px"}, children=[
+                    html.Div(style={"border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px"}, children=[
+                        html.Div(style={"padding": "12px 20px", "borderBottom": f"1px solid {THEME['border']}", "backgroundColor": THEME["bg_head"]}, children=[
+                            html.Div("MECHANIZM THETA -- BACKTEST ATTRIBUTION (ODPOWIEDNIK ZAKŁADKI 2, ALE CO 21 SESJI)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div(
+                                "To samo co \"Analiza Wsteczna (Batch)\" w zakładce 2, ale zamiast dynamicznej alokacji progowej (80/20 na "
+                                "przecięciu Z-score) używa mechanizmu theta: raz na 21 sesji płynne przechylenie wagi 0.5 + 0.5·θ·tanh(-Z), "
+                                "trzymane bez zmian przez cały miesiąc. Dla KAŻDEJ pary z ostatniego skanu liczy średnią miesięczną Alpha przez "
+                                "12 miesięcy oraz t-statystykę (czy ta przewaga jest statystycznie odróżnialna od zera). Korelacje pokazują, "
+                                "które zmienne (p-value, half-life, hedge ratio, rozbieżność ścieżek, ten sam sektor) faktycznie tłumaczą "
+                                "skuteczność TEGO KONKRETNEGO mechanizmu -- niezależnie od tego, co tłumaczyło skuteczność mechanizmu progowego "
+                                "w zakładce 2. Wymaga wcześniejszego skanu w pierwszej zakładce.",
+                                style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
+                            ),
+                            html.Div(style={"display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap"}, children=[
+                                html.Div(style={"minWidth": "180px"}, children=[
+                                    html.Div("MINIMALNA LICZBA BRAMEK", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Dropdown(id="relval-thetabatch-min-gates", clearable=False, value=1, options=[
+                                        {"label": f"{n} / 3 lub więcej", "value": n} for n in [1, 2, 3]
+                                    ]),
+                                ]),
+                                html.Div(style={"minWidth": "140px"}, children=[
+                                    html.Div("THETA (siła nudge)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Input(id="relval-thetabatch-theta", type="number", value=0.15, min=0.05, max=0.6, step=0.05, style={
+                                        "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
+                                        "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                                    }),
+                                ]),
+                                html.Div(style={"minWidth": "140px"}, children=[
+                                    html.Div("LICZBA MIESIĘCY (max 48)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Input(id="relval-thetabatch-nmonths", type="number", value=12, min=2, max=48, step=1, style={
+                                        "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
+                                        "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                                    }),
+                                ]),
+                                html.Button("URUCHOM ANALIZĘ WSTECZNĄ THETA", id="btn-relval-thetabatch-run", n_clicks=0, style={
+                                    "padding": "10px 20px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                                    "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer", "height": "38px"
+                                }),
+                            ]),
+                            html.Div(id="relval-thetabatch-status", style={"marginTop": "10px", "fontSize": "12px"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div("TEST ZBIORCZY -- CZY MECHANIZM DZIAŁA SYSTEMATYCZNIE NA CAŁYM PRZEFILTROWANYM ZBIORZE?", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            html.Div(
+                                "Pojedyncza para ma tylko tyle miesięcy, ile ustawiono wyżej -- z natury słaba moc statystyczna, bo prawdziwy "
+                                "efekt (jeśli istnieje) musi się przebić przez szum pojedynczych, w większości niezależnych miesięcy. Ten test "
+                                "łączy WSZYSTKIE miesięczne obserwacje z WSZYSTKICH par w tabeli poniżej (te same, przefiltrowane wg liczby "
+                                "bramek) w jedną pulę i sprawdza, czy średnia w całej puli różni się od zera. Odpowiada na INNE pytanie niż "
+                                "ranking per para: nie \"czy TA para działa\", tylko \"czy mechanizm jako taki ma systematyczny efekt na tym zbiorze\".",
+                                style={"fontSize": "11px", "color": THEME["text_dim"], "marginBottom": "12px", "fontStyle": "italic"}
+                            ),
+                            html.Div(id="relval-thetabatch-pooled", style={"fontSize": "13px"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div("KORELACJA ZMIENNYCH Z t-STATYSTYKĄ MECHANIZMU THETA", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                html.Div(id="relval-thetabatch-correlations"),
+                            ]),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div("p-value vs ŚREDNIA ALPHA MIESIĘCZNA (mechanizm theta)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                dcc.Graph(id="relval-thetabatch-scatter", config={"displayModeBar": False}, style={"height": "420px"}),
+                            ]),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div("HALF-LIFE vs t-STATYSTYKA -- CZY DŁUŻSZY POWRÓT DO ŚREDNIEJ SZKODZI TEMU MECHANIZMOWI?", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            html.Div(
+                                "Hipoteza (2026-09-08): half-life bliski górnej granicy bramki (63 sesje) może być zbyt blisko pierwiastka "
+                                "jednostkowego, żeby 252-sesyjne okno bazowe złapało jego prawdziwą równowagę -- dokładnie ten problem, który "
+                                "napotkaliśmy budując ten mechanizm. Jeśli hipoteza się potwierdza, powinien być widoczny wyraźny spadek "
+                                "t-statystyki przy wyższym half-life.",
+                                style={"fontSize": "11px", "color": THEME["text_dim"], "marginBottom": "12px", "fontStyle": "italic"}
+                            ),
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                dcc.Graph(id="relval-thetabatch-halflife-scatter", config={"displayModeBar": False}, style={"height": "420px"}),
+                            ]),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div("ŚR. ALPHA MIESIĘCZNA vs ZWROT SKUMULOWANY -- CZY TO NIEZALEŻNE LICZBY?", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            html.Div(
+                                "Nie są niezależne -- to dwa różne SPOSOBY podsumowania tych samych N miesięcznych wyników dla każdej pary. "
+                                "\"Śr. Alpha Miesięczna\" to zwykła średnia arytmetyczna z N miesięcznych różnic (przechylona waga minus 50/50). "
+                                "\"Zwrot Skumulowany\" to PRAWDZIWE złożenie procentowe tych samych N miesięcy -- (1+r1)×(1+r2)×...×(1+rN), nie "
+                                "suma. Te dwie wartości są ze sobą silnie powiązane (zobacz wykres), ale nie identyczne, bo składanie zależy też "
+                                "od KOLEJNOŚCI zwrotów, nie tylko ich średniej -- stąd punkty na wykresie leżą blisko linii, ale nie idealnie na niej.",
+                                style={"fontSize": "11px", "color": THEME["text_dim"], "marginBottom": "12px", "fontStyle": "italic"}
+                            ),
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                dcc.Graph(id="relval-thetabatch-cumulative-scatter", config={"displayModeBar": False}, style={"height": "380px"}),
+                            ]),
+                        ]),
+                        html.Div(style={"padding": "18px 20px"}, children=[
+                            html.Div("RANKING PAR PO |t-STATYSTYCE| MECHANIZMU THETA", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            html.Div(
+                                "Kolejność wierszy: |t-statystyka| malejąco -- para na górze niekoniecznie ma najwyższą Alpha, tylko najbardziej "
+                                "KONSEKWENTNĄ (największy stosunek średniej do własnego odchylenia miesiąc-do-miesiąca). Kolejność w tej tabeli "
+                                "NIE MA żadnego wpływu na paski korelacji ani na wykresy powyżej -- korelacja liczy się z całego zbioru par "
+                                "naraz, niezależnie od tego, jak są tu posortowane; możesz swobodnie sortować tabelę po dowolnej kolumnie "
+                                "(klikając strzałki w nagłówku), nic ponad wyświetlaną kolejność się nie zmieni.",
+                                style={"fontSize": "11px", "color": THEME["text_dim"], "marginBottom": "12px", "fontStyle": "italic"}
+                            ),
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                html.Div(id="relval-thetabatch-table"),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+
+            dcc.Tab(label="PORÓWNANIE DŁUGOŚCI OKNA", value="relval-tab-window-compare", style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE, children=[
+                html.Div(style={"paddingTop": "16px"}, children=[
+                    html.Div(style={"border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px"}, children=[
+                        html.Div(style={"padding": "12px 20px", "borderBottom": f"1px solid {THEME['border']}", "backgroundColor": THEME["bg_head"]}, children=[
+                            html.Div("1 MIESIĄC × 48 vs 2 MIESIĄCE × 24 vs 3 MIESIĄCE × 16 -- KTÓRA DŁUGOŚĆ OKRESU DAJE STABILNIEJSZY WYNIK?", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div(
+                                "Ten sam całkowity okres testowy (~4 lata), pocięty na różną liczbę niezależnych okresów: 48 miesięcy, "
+                                "24 dwumiesięczne bloki, albo 16 trzymiesięcznych bloków. Krótsze okresy dają WIĘCEJ niezależnych próbek, "
+                                "ale każda z nich mierzy krótszy kawałek czasu; dłuższe okresy dają mniej próbek, ale każda uśrednia dłuższy "
+                                "fragment. To nie jest oczywiste z góry, która strona wygrywa -- każdy wariant liczony jest tym samym, już "
+                                "poprawionym mechanizmem (precyzyjny pomiar dzienny w obrębie każdego okresu, nie tylko dwa punkty końcowe). "
+                                "Wymaga wcześniejszego skanu w pierwszej zakładce.",
+                                style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
+                            ),
+                            html.Div(style={"display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap"}, children=[
+                                html.Div(style={"minWidth": "180px"}, children=[
+                                    html.Div("MINIMALNA LICZBA BRAMEK", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Dropdown(id="relval-wincompare-min-gates", clearable=False, value=1, options=[
+                                        {"label": f"{n} / 3 lub więcej", "value": n} for n in [1, 2, 3]
+                                    ]),
+                                ]),
+                                html.Div(style={"minWidth": "140px"}, children=[
+                                    html.Div("THETA (siła nudge)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Input(id="relval-wincompare-theta", type="number", value=0.15, min=0.05, max=0.6, step=0.05, style={
+                                        "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
+                                        "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                                    }),
+                                ]),
+                                html.Button("PORÓWNAJ DŁUGOŚCI OKNA", id="btn-relval-wincompare-run", n_clicks=0, style={
+                                    "padding": "10px 20px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                                    "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer", "height": "38px"
+                                }),
+                            ]),
+                            html.Div(id="relval-wincompare-status", style={"marginTop": "10px", "fontSize": "12px"}),
+                        ]),
+                        html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+                            html.Div("PODSUMOWANIE -- ŚREDNIA |t-STATYSTYKA| I % PAR ISTOTNYCH, PER WARIANT", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                dcc.Graph(id="relval-wincompare-chart", config={"displayModeBar": False}, style={"height": "360px"}),
+                            ]),
+                        ]),
+                        html.Div(style={"padding": "18px 20px"}, children=[
+                            html.Div("SZCZEGÓŁY -- KAŻDA PARA W KAŻDYM WARIANCIE", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            dcc.Loading(type="circle", color=THEME["accent"], children=[
+                                html.Div(id="relval-wincompare-table"),
                             ]),
                         ]),
                     ]),

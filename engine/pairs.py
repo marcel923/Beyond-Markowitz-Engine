@@ -45,7 +45,7 @@ already-fetched price DataFrame (e.g. via data.market_data.fetch_universe_prices
 from __future__ import annotations
 
 import itertools
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -635,15 +635,27 @@ def compute_correlations(df: pd.DataFrame, target_col: str, candidate_cols: List
     absolute correlation strength descending (most explanatory first,
     regardless of sign). Columns missing from `df`, or with zero variance
     (correlation undefined), are silently excluded -- not returned as NaN.
+
+    Infinite values (e.g. Half-Life can legitimately be `float("inf")` for
+    a pair whose spread shows no mean reversion at all -- see
+    `_half_life`'s docstring) are replaced with NaN before correlating,
+    not passed through: `pandas.Series.corr()`'s underlying computation
+    does not treat +-inf the way NaN is treated (silently excluded from
+    the pairwise calculation) -- it can corrupt the whole computation via
+    invalid subtraction/dot-product operations, confirmed to actually
+    happen (a real bug caught during testing, 2026-09-08 twelfth
+    follow-up) when a batch legitimately contained one non-mean-reverting
+    pair.
     """
     correlations = {}
     for col in candidate_cols:
         if col not in df.columns or col == target_col:
             continue
-        series = pd.to_numeric(df[col], errors="coerce")
+        series = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan)
         if series.nunique(dropna=True) < 2:
             continue
-        corr = series.corr(pd.to_numeric(df[target_col], errors="coerce"))
+        target_series = pd.to_numeric(df[target_col], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        corr = series.corr(target_series)
         if pd.notna(corr):
             correlations[col] = float(corr)
     return pd.Series(correlations).sort_values(key=lambda s: s.abs(), ascending=False)
@@ -934,6 +946,27 @@ def simulate_monthly_walkforward(
                             requested -- a month is skipped if its preceding
                             TRAIN window doesn't have enough data, e.g. too
                             close to the start of the available price history)
+        "cumulative_alpha_pp" : float or None -- TRUE compounded return of the
+                            tilted allocation across all n usable months, minus
+                            the compounded 50/50 return over the SAME months, in
+                            percentage points. Deliberately distinct from
+                            mean_alpha * n_months (compounding is non-linear and
+                            order-dependent; a simple average understates or
+                            overstates the actual cumulative effect depending on
+                            the sequence of returns). Confirmed addition
+                            (2026-09-08, tenth follow-up): answers "does this look
+                            like a real edge on the kind of cumulative equity
+                            curve a person would actually look at," which is a
+                            different question from whether the month-to-month
+                            t-test reaches significance -- a modest, consistent
+                            monthly edge can compound into a visually convincing
+                            curve while still not clearing a strict t-test at n=12.
+        "pct_months_positive" : float or None -- % of the n usable months where
+                            the tilted allocation beat 50/50 for that month alone
+                            (monthly_alpha > 0). The direct monthly analogue of
+                            "Days In Lead" from the discrete-mechanism tabs,
+                            confirmed scope: measured strictly against 50/50,
+                            not against the best of any other alternative.
     """
     pair_df = pd.DataFrame({"a": prices_a, "b": prices_b}).dropna()
     if not isinstance(pair_df.index, pd.DatetimeIndex):
@@ -947,6 +980,8 @@ def simulate_monthly_walkforward(
 
     test_start_pos = len(pair_df) - total_test_rows
     monthly_alphas = []
+    monthly_ret_dynamic = []
+    monthly_ret_5050 = []
     details = []
 
     for m in range(n_months):
@@ -984,9 +1019,31 @@ def simulate_monthly_walkforward(
 
         ret_dynamic = weight_a * ret_a_month + weight_b * ret_b_month
         ret_5050 = 0.5 * ret_a_month + 0.5 * ret_b_month
-        monthly_alpha_pp = (ret_dynamic - ret_5050) * 100.0
+
+        # Confirmed precision fix ("Opcja B", 2026-09-08 czternasty follow-up):
+        # the value that feeds the t-test (monthly_alphas) is measured as the
+        # MEAN of the DAILY signed tilt-effect across every day WITHIN this
+        # already-independent period, not the two-endpoint difference above
+        # (which is only used for TRUE compounding in cumulative_alpha_pp,
+        # where the real realized return matters). Averaging daily
+        # observations INSIDE one period is not the same mistake as the
+        # rejected whole-window daily-averaging attempt (Etap 7m) -- there,
+        # daily points were highly autocorrelated because they were
+        # positions on the SAME cumulative multi-period curve; here, the
+        # daily returns being averaged are all confined to one single,
+        # already-independent rebalance_days-long decision window, so
+        # averaging them reduces the influence of any one day's noise on
+        # the measurement WITHOUT manufacturing spurious extra independent
+        # samples across periods -- confirmed via a dedicated noise-reduction
+        # test before being trusted (see PROJECT_CONTEXT.md).
+        daily_ret_a = month_slice["a"].pct_change().dropna()
+        daily_ret_b = month_slice["b"].pct_change().dropna()
+        daily_tilt_effect = (weight_a - 0.5) * (daily_ret_a - daily_ret_b)
+        monthly_alpha_pp = float(daily_tilt_effect.mean()) * 100.0 if len(daily_tilt_effect) > 0 else (ret_dynamic - ret_5050) * 100.0
 
         monthly_alphas.append(monthly_alpha_pp)
+        monthly_ret_dynamic.append(ret_dynamic)
+        monthly_ret_5050.append(ret_5050)
         details.append({
             "month_start": month_start_date.strftime("%Y-%m-%d"),
             "z_score": round(float(z_at_month_start), 3),
@@ -997,17 +1054,31 @@ def simulate_monthly_walkforward(
     n = len(monthly_alphas)
     if n < 2:
         return {"monthly_alpha": monthly_alphas, "details": details, "mean_alpha": None, "std_alpha": None,
-                "t_stat": None, "p_value": None, "n_months": n}
+                "t_stat": None, "p_value": None, "n_months": n,
+                "cumulative_alpha_pp": None, "pct_months_positive": None}
 
     arr = np.array(monthly_alphas)
     mean_alpha = float(arr.mean())
     std_alpha = float(arr.std(ddof=1))
     t_stat, p_value = scipy_stats.ttest_1samp(arr, 0.0)
 
+    # Skumulowany zwrot -- prawdziwe skladanie procentowe przez kolejne miesiace,
+    # nie tylko srednia z miesiecznych roznic (ktore niedoszacowuje/przeszacowuje
+    # efekt skumulowany w zaleznosci od kolejnosci zwrotow). Confirmed dodatek
+    # (2026-09-08, dziesiaty follow-up): odpowiada na "wyglada dobrze na
+    # skumulowanym wykresie w Zakladce 1" niezaleznie od tego, co mowi t-test
+    # miesiac-do-miesiaca -- to dwie rozne rzeczy, obie warte pokazania.
+    cumulative_dynamic = float(np.prod([1.0 + r for r in monthly_ret_dynamic]) - 1.0)
+    cumulative_5050 = float(np.prod([1.0 + r for r in monthly_ret_5050]) - 1.0)
+    cumulative_alpha_pp = (cumulative_dynamic - cumulative_5050) * 100.0
+    pct_months_positive = float(np.mean(arr > 0) * 100.0)
+
     return {
         "monthly_alpha": monthly_alphas, "details": details,
         "mean_alpha": mean_alpha, "std_alpha": std_alpha,
         "t_stat": float(t_stat), "p_value": float(p_value), "n_months": n,
+        "cumulative_alpha_pp": round(cumulative_alpha_pp, 3),
+        "pct_months_positive": round(pct_months_positive, 1),
     }
 
 
@@ -1016,11 +1087,15 @@ def run_monthly_walkforward_batch(
     theta: float = DEFAULT_THETA, zscore_window: int = DEFAULT_ZSCORE_WINDOW_MONTHLY,
     train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY, n_months: int = DEFAULT_N_MONTHS,
     rebalance_days: int = DEFAULT_REBALANCE_DAYS,
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, List[float]]:
     """
     Runs simulate_monthly_walkforward for every pair in `pairs_df`
     (expects "Ticker A"/"Ticker B" columns -- e.g. scan_universe_diagnostics's
-    output, though its p-value/half-life columns are NOT used for gating
+    output). ALL of `pairs_df`'s original columns are carried through into
+    the output unchanged (2026-09-08, ninth follow-up: needed so gate
+    diagnostics like P-Value, Half-Life, Hedge Ratio, Avg Relative
+    Divergence, Gates Passed remain available for correlation analysis
+    against this mechanism's own outcome -- they are NOT used for gating
     here at all, per confirmed design: this mechanism is judged purely on
     whether its own monthly edge is statistically distinguishable from
     zero, not on cointegration "quality").
@@ -1030,15 +1105,27 @@ def run_monthly_walkforward_batch(
     STATYSTYCZNIE"): the t-statistic is the direct, formal measure of
     whether a pair's monthly edge is distinguishable from noise, which
     combines both the SIZE of the average edge and the CONSISTENCY of it
-    across the 12 months -- a pair with a large but wildly inconsistent
+    across the n_months, which a pair with a large but wildly inconsistent
     average will score worse here than one with a smaller but highly
     consistent average, which is exactly the discrimination being asked for.
 
     Pairs with fewer than 2 usable months (e.g. insufficient price history
     for the requested train_years + n_months window) are excluded from the
     output entirely, not included with null placeholders.
+
+    Returns a TUPLE (per_pair_df, pooled_monthly_alphas) -- confirmed
+    addition (2026-09-08, eleventh follow-up, "Opcja B"): `pooled_monthly_alphas`
+    is a flat list of EVERY individual (pair, month) raw monthly alpha value
+    across every pair that was included in `per_pair_df` -- collected here,
+    inside the SAME loop that already runs simulate_monthly_walkforward per
+    pair, specifically so a caller can run ONE pooled significance test
+    across the whole filtered candidate set (see compute_pooled_significance)
+    WITHOUT re-running the backtest a second time. Confirmed scope: this
+    pools the SAME candidate pairs already selected by the caller's own
+    gate-count filter -- not the full universe regardless of gates.
     """
     rows = []
+    pooled_monthly_alphas: List[float] = []
     for _, row in pairs_df.iterrows():
         tA, tB = row["Ticker A"], row["Ticker B"]
         if tA not in prices_df.columns or tB not in prices_df.columns:
@@ -1051,18 +1138,56 @@ def run_monthly_walkforward_batch(
         if result["n_months"] < 2 or result["t_stat"] is None:
             continue
 
-        rows.append({
-            "Ticker A": tA, "Ticker B": tB, "N Miesięcy": result["n_months"],
+        pooled_monthly_alphas.extend(result["monthly_alpha"])
+
+        out_row = dict(row)
+        out_row.update({
+            "N Miesięcy": result["n_months"],
             "Śr. Alpha Miesięczna [pp]": round(result["mean_alpha"], 4),
             "Std Alpha Miesięczna [pp]": round(result["std_alpha"], 4),
             "t-statystyka": round(result["t_stat"], 3),
             "p-value (t-test)": round(result["p_value"], 4),
+            "Zwrot Skumulowany [pp]": result["cumulative_alpha_pp"],
+            "% Miesięcy > 50/50": result["pct_months_positive"],
         })
+        rows.append(out_row)
 
     if not rows:
-        return pd.DataFrame()
+        return pd.DataFrame(), pooled_monthly_alphas
     out = pd.DataFrame(rows)
-    return out.sort_values("t-statystyka", ascending=False, key=lambda s: s.abs()).reset_index(drop=True)
+    return out.sort_values("t-statystyka", ascending=False, key=lambda s: s.abs()).reset_index(drop=True), pooled_monthly_alphas
+
+
+def compute_pooled_significance(pooled_monthly_alphas: List[float]) -> Dict[str, object]:
+    """
+    One-sample t-test on a POOLED set of monthly alpha values gathered
+    across MANY pairs at once (see run_monthly_walkforward_batch's second
+    return value) -- confirmed addition (2026-09-08, eleventh follow-up,
+    "Opcja B"): answers a DIFFERENT question than any single pair's own
+    t-statistic does. A per-pair test (n_months, typically 12-48
+    observations) asks "is THIS SPECIFIC pair's edge distinguishable from
+    noise" -- and is inherently underpowered, since the true effect (if
+    any) has to fight through a small sample of mostly idiosyncratic,
+    near-independent monthly stock-return noise. Pooling every (pair,
+    month) observation across the WHOLE filtered candidate set (the SAME
+    gate-count-filtered pairs already shown in the per-pair table, not the
+    unfiltered universe) asks instead "is there a systematic, non-zero
+    effect across this whole set of pairs" -- with far more statistical
+    power (hundreds or thousands of observations instead of a few dozen),
+    at the cost of saying nothing about any one specific pair.
+
+    Returns dict: {"n": int, "mean": float, "std": float, "t_stat": float,
+    "p_value": float}, or all None values (except "n") if fewer than 2
+    pooled observations are available.
+    """
+    n = len(pooled_monthly_alphas)
+    if n < 2:
+        return {"n": n, "mean": None, "std": None, "t_stat": None, "p_value": None}
+    arr = np.array(pooled_monthly_alphas)
+    mean = float(arr.mean())
+    std = float(arr.std(ddof=1))
+    t_stat, p_value = scipy_stats.ttest_1samp(arr, 0.0)
+    return {"n": n, "mean": mean, "std": std, "t_stat": float(t_stat), "p_value": float(p_value)}
 
 
 def run_theta_trailing_stability(
@@ -1262,3 +1387,176 @@ def simulate_monthly_theta_curve(
         "month_boundaries": month_boundaries,
         "n_months": usable_months,
     }
+
+
+# ---------------------------------------------------------------------------
+# Whole-Period Signed Divergence (theta curve vs 50/50) -- confirmed
+# addition, 2026-09-08 thirteenth follow-up ("Pomysl 1")
+# ---------------------------------------------------------------------------
+
+def mean_signed_log_divergence(equity_a: List[float], equity_b: List[float]) -> float:
+    """
+    Mean SIGNED log-divergence between two equity curves across every day
+    they both cover: mean_t( ln(equity_a[t]) - ln(equity_b[t]) ).
+
+    Deliberately SIGNED, unlike avg_relative_divergence_5y (which uses
+    absolute value because it measures how far apart two STOCK price paths
+    have drifted, with no preferred direction). Here, "equity_a" is
+    expected to be the theta-tilted strategy curve and "equity_b" the
+    passive 50/50 benchmark curve -- confirmed design (2026-09-08,
+    thirteenth follow-up): the whole point is to know WHICH DIRECTION the
+    separation runs (theta ahead of 50/50, or behind it), not just that a
+    gap exists. An unsigned measure would score a strategy that
+    consistently LOSES to 50/50 identically to one that consistently WINS,
+    which defeats the purpose entirely.
+
+    Averaging over every day in the test window (typically 1000+
+    observations for a multi-year window), rather than over a handful of
+    discrete monthly snapshots (see simulate_monthly_walkforward's
+    12-48-point mean_alpha), is the whole motivation for this metric:
+    confirmed hypothesis being tested is that the existing monthly-snapshot
+    approach is too noisy (few, largely-independent observations per pair)
+    to reliably detect a real but modest effect, and that averaging the
+    SAME underlying separation over every day instead should produce a
+    substantially more stable per-pair estimate.
+
+    Both curves must be the same length and already aligned day-for-day
+    (e.g. simulate_monthly_theta_curve's own "equity_strategy" and
+    "equity_benchmark" outputs, which are built from the same date index).
+    Returns 0.0 for empty input rather than raising.
+    """
+    if not equity_a or not equity_b or len(equity_a) != len(equity_b):
+        return 0.0
+    a = np.array(equity_a)
+    b = np.array(equity_b)
+    return float(np.mean(np.log(a) - np.log(b)))
+
+
+def run_theta_divergence_batch(
+    prices_df: pd.DataFrame, pairs_df: pd.DataFrame,
+    theta: float = DEFAULT_THETA, zscore_window: int = DEFAULT_ZSCORE_WINDOW_MONTHLY,
+    train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY, n_months: int = DEFAULT_N_MONTHS,
+    rebalance_days: int = DEFAULT_REBALANCE_DAYS,
+) -> pd.DataFrame:
+    """
+    For every pair, runs simulate_monthly_theta_curve (the SAME theta
+    mechanism as the rest of this module -- monthly-refreshed hedge ratio
+    and Z-score baseline, weight held fixed within each month) and reduces
+    its full daily equity curves to ONE number per pair via
+    mean_signed_log_divergence -- confirmed replacement correlation target
+    ("Pomysl 1", 2026-09-08 thirteenth follow-up), averaged over every day
+    of the whole test window rather than over n_months discrete monthly
+    snapshots, in the hope of a materially less noisy per-pair estimate.
+
+    ALL of `pairs_df`'s original columns are carried through unchanged
+    (same convention as run_backtest_batch / run_monthly_walkforward_batch),
+    so gate diagnostics remain available for correlation analysis.
+
+    Returns
+    -------
+    pd.DataFrame, sorted by "Signed Divergence (Whole Period)" descending
+    (theta most ahead of 50/50 first). New column:
+        "Signed Divergence (Whole Period)" -- mean_t(ln(theta_t) - ln(5050_t))
+        across the ENTIRE test window for that pair; positive = theta ahead
+        of 50/50 on average across the whole period, negative = behind.
+    Pairs where simulate_monthly_theta_curve couldn't produce a usable
+    curve (e.g. insufficient price history) are excluded, not included
+    with null placeholders.
+    """
+    rows = []
+    for _, row in pairs_df.iterrows():
+        tA, tB = row["Ticker A"], row["Ticker B"]
+        if tA not in prices_df.columns or tB not in prices_df.columns:
+            continue
+        pair_df = prices_df[[tA, tB]].dropna(how="any")
+        pa, pb = pair_df[tA], pair_df[tB]
+
+        curve = simulate_monthly_theta_curve(pa, pb, theta=theta, zscore_window=zscore_window,
+                                              train_years=train_years, n_months=n_months, rebalance_days=rebalance_days)
+        if not curve["dates"]:
+            continue
+
+        divergence = mean_signed_log_divergence(curve["equity_strategy"], curve["equity_benchmark"])
+
+        out_row = dict(row)
+        out_row["Signed Divergence (Whole Period)"] = round(divergence, 5)
+        out_row["N Miesięcy"] = curve["n_months"]
+        rows.append(out_row)
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("Signed Divergence (Whole Period)", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Window-Length Comparison (1x48 vs 2x24 vs 3x16) -- confirmed experiment,
+# 2026-09-08 fourteenth follow-up
+# ---------------------------------------------------------------------------
+
+WINDOW_LENGTH_VARIANTS = [
+    {"label": "1 miesiąc x 48", "rebalance_days": 21, "n_months": 48},
+    {"label": "2 miesiące x 24", "rebalance_days": 42, "n_months": 24},
+    {"label": "3 miesiące x 16", "rebalance_days": 63, "n_months": 16},
+]
+
+
+def compare_window_lengths(
+    prices_df: pd.DataFrame, pairs_df: pd.DataFrame,
+    theta: float = DEFAULT_THETA, zscore_window: int = DEFAULT_ZSCORE_WINDOW_MONTHLY,
+    train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Runs run_monthly_walkforward_batch three times over the SAME total test
+    span (~48*21=1008 trading sessions) and the SAME candidate pairs, once
+    per entry in WINDOW_LENGTH_VARIANTS -- confirmed experiment (2026-09-08
+    fourteenth follow-up): does cutting the same total span into fewer,
+    LONGER independent periods (2 or 3 months each) produce more stable
+    results than the original 48 separate 1-month periods, at the cost of
+    having fewer independent observations per pair? A genuine bias-variance
+    tradeoff, not assumed to favor either side -- answered empirically here,
+    not by argument.
+
+    For each variant AND each pair, uses the (2026-09-08, "Opcja B") daily-
+    averaged-within-period measurement already built into
+    simulate_monthly_walkforward -- this experiment is specifically about
+    the PERIOD LENGTH, with the per-period measurement precision fix held
+    constant across all three variants for a fair comparison.
+
+    Returns a TUPLE (detail_df, summary_df):
+        detail_df   : one row per (pair, variant) combination -- "Wariant",
+                      "Ticker A", "Ticker B", "N Miesięcy", "t-statystyka",
+                      "p-value (t-test)", "Śr. Alpha Miesięczna [pp]",
+                      "Std Alpha Miesięczna [pp]"
+        summary_df  : one row per variant, aggregated across all pairs --
+                      "Wariant", "N Par", "Śr. |t-statystyka|",
+                      "% Istotnych (p<0.05)" -- the direct, at-a-glance
+                      answer to "which windowing gives the most stable
+                      results across this batch".
+    """
+    all_rows = []
+    summary_rows = []
+    for variant in WINDOW_LENGTH_VARIANTS:
+        batch, _pooled = run_monthly_walkforward_batch(
+            prices_df, pairs_df, theta=theta, zscore_window=zscore_window,
+            train_years=train_years, n_months=variant["n_months"], rebalance_days=variant["rebalance_days"],
+        )
+        if batch.empty:
+            summary_rows.append({"Wariant": variant["label"], "N Par": 0, "Śr. |t-statystyka|": None, "% Istotnych (p<0.05)": None})
+            continue
+
+        for _, row in batch.iterrows():
+            all_rows.append({
+                "Wariant": variant["label"], "Ticker A": row["Ticker A"], "Ticker B": row["Ticker B"],
+                "N Miesięcy": row["N Miesięcy"], "t-statystyka": row["t-statystyka"],
+                "p-value (t-test)": row["p-value (t-test)"],
+                "Śr. Alpha Miesięczna [pp]": row["Śr. Alpha Miesięczna [pp]"],
+                "Std Alpha Miesięczna [pp]": row["Std Alpha Miesięczna [pp]"],
+            })
+
+        summary_rows.append({
+            "Wariant": variant["label"], "N Par": len(batch),
+            "Śr. |t-statystyka|": round(float(batch["t-statystyka"].abs().mean()), 3),
+            "% Istotnych (p<0.05)": round(float((batch["p-value (t-test)"] < 0.05).mean() * 100), 1),
+        })
+
+    return pd.DataFrame(all_rows), pd.DataFrame(summary_rows)

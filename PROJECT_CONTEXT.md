@@ -1979,6 +1979,384 @@ revisit once this per-pair visual has been used to build intuition first
 
 ---
 
+### 7i. Theta Batch Attribution — fifth sub-tab, mirroring Tab 2 (complete)
+
+Confirmed observation (2026-09-08, ninth follow-up): running the theta
+mechanism pair-by-pair (Etap 7h's chart), the project owner found that
+memory-sector pairs (WDC/000660.KS and similar) show no edge under this
+mechanism, while pairs passing all 3 gates show a modest but apparently
+REPEATABLE edge that scales up with theta. Explicit request: build a
+batch-level equivalent of Tab 2's "Analiza Wsteczna (Batch)" -- same
+correlation-bar + scatter + ranked-table structure -- but powered by the
+theta/monthly mechanism instead of the discrete threshold one, with theta
+itself adjustable, to test this observation systematically across every
+scanned pair rather than one at a time.
+
+**Engine fix required first**: `run_monthly_walkforward_batch` previously
+discarded every column from its input `pairs_df` except Ticker A/B,
+carrying through none of the gate diagnostics (P-Value, Half-Life, Hedge
+Ratio, Avg Relative Divergence, Gates Passed) needed for correlation
+analysis. Fixed to carry through all original columns unchanged, via
+`dict(row)`, matching the pattern already used by `run_backtest_batch`.
+Verified directly: gate-diagnostic columns are now present and populated
+correctly in the function's output.
+
+**A genuine, mathematically confirmed finding from testing, worth
+recording**: increasing theta from 0.15 to 0.40 (a 2.67x increase) scaled
+"Śr. Alpha Miesięczna [pp]" by almost exactly the same factor (2.666x),
+while the t-statistic stayed EXACTLY unchanged (2.901 in both runs). This
+is not a coincidence -- it follows directly from the mechanism's linearity
+in theta: `weight_A - 0.5 = 0.5*theta*tanh(-Z)` scales every month's
+realized alpha by the same constant factor, which scales BOTH the mean and
+the standard deviation of the 12 monthly alphas proportionally, leaving
+their ratio (the t-statistic) invariant. Practical implication, stated
+explicitly to the project owner: increasing theta amplifies the SIZE of
+the edge (and proportionally, the risk/drawdown) but does NOT increase
+confidence that the edge is real -- a decision to raise theta is a
+decision to bet more on the same signal, not evidence of a better signal.
+
+**UI**: fifth `dcc.Tab` ("ANALIZA WSTECZNA THETA (BATCH)"), structurally
+mirroring Tab 2 -- minimum-gates filter, adjustable `theta`, a "run"
+button, correlation bars (against "Śr. Alpha Miesięczna [pp]", the
+theta-mechanism's own outcome measure -- explicitly NOT the same quantity
+as the discrete mechanism's "Relative Alpha [%]", called out in the UI
+copy so the two are not confused as comparable across tabs), a p-value-vs-alpha
+scatter (log-x, same convention as Tab 2's scatter, for visual
+consistency), and a ranked table sorted by `|t-statistic|` descending.
+
+Full app integration recheck (57/57 callbacks -- 56 prior + 1 new), solver
+regression rerun (identical weights to every prior check in this
+project's history).
+
+---
+
+### 7j. Half-Life Hypothesis Chart, Cumulative Return, and % Months Above 50/50 — Tab 5 only (complete)
+
+Confirmed observation (2026-09-08, tenth follow-up): all correlations in
+Tab 5 (theta batch attribution) came back negative against
+`Śr. Alpha Miesięczna [pp]`, including Half-Life at -0.347 (the
+strongest), yet the project owner separately observed in Tab 1's per-pair
+chart that fully-qualifying pairs looked consistently good above 50/50.
+Two candidate explanations were proposed and discussed before any code
+change, per the project owner's explicit request to think it through
+first: (1) the same near-unit-root failure mode already documented when
+this mechanism was first built (Etap 7f) -- a half-life near the gate's
+upper bound (63 sessions) may be too close to a unit root for the
+252-session baseline to capture a genuinely stable equilibrium; (2) a
+modest but consistent monthly edge can compound into a visually
+convincing cumulative equity curve (what Tab 1 shows) while still not
+clearing a strict month-to-month t-test at n=12 (what Tab 5's correlation
+table reflects) -- these are different questions, not contradictory
+findings.
+
+**Explicitly scoped to Tab 5 only, per direct instruction** ("pamietaj co
+do punktu 3 ze to ma isc do zakladki 5 a nie do drugiej, drugiej nie ruszaj
+niech bedzie jaka jest") -- Tab 2 (the discrete-mechanism batch attribution)
+is completely untouched by this change.
+
+**New engine outputs, `simulate_monthly_walkforward` and
+`run_monthly_walkforward_batch`**: two additional summary statistics per
+pair, addressing hypothesis #2 directly:
+- `cumulative_alpha_pp`: the TRUE compounded return of the theta-tilted
+  allocation across all usable months, minus the compounded 50/50 return
+  over the same months -- deliberately NOT `mean_alpha * n_months`, since
+  compounding is non-linear and order-dependent; verified numerically that
+  the naive product-of-average differs measurably (by ~0.32pp in one test
+  run) from the correctly compounded figure.
+- `pct_months_positive`: % of usable months where the tilted allocation
+  beat 50/50 for that month alone -- the direct monthly analogue of "Days
+  In Lead" from the discrete-mechanism tabs, explicitly measured against
+  50/50 specifically (clarified in this same conversation: this tab's
+  Alpha was ALREADY computed against 50/50, not "best of three
+  alternatives" as in Tab 2 -- that distinction only ever applied to Tab 2).
+
+Both verified against hand-computed reference values (compounding via
+`numpy.prod`, positive-month count via direct enumeration) before being
+trusted in the UI.
+
+**New chart addressing hypothesis #1**: a Half-Life vs. t-statistic
+scatter, added alongside the existing p-value scatter in Tab 5. Tested
+directly against two purpose-built synthetic scenarios (a short,
+252-window-appropriate half-life ~12 sessions vs. two long,
+near-gate-boundary half-lives ~55-60 sessions): the short-half-life pair
+showed the best t-statistic (+1.023) of the batch, while every
+long-half-life pair scored markedly weaker (+0.546 down to -0.016) --
+directionally consistent with hypothesis #1, though this was a small,
+single-draw illustrative check (n=4 pairs), not a statistically
+conclusive test; the chart now lets the project owner examine this
+pattern directly against the real universe's actual pairs.
+
+**UI**: two new table columns ("Zwrot Skum. 12M [pp]", "% Miesięcy >
+50/50") and the new Half-Life vs t-statistic chart, all in Tab 5 only,
+with brief in-UI copy stating the hypothesis being tested. Full app
+integration recheck (57/57 callbacks -- same count, this modifies an
+existing callback's Outputs/body), solver regression rerun (identical
+weights to every prior check in this project's history).
+
+---
+
+### 7k. Extended Test Window (Option A) and Pooled Significance Test (Option B) (complete)
+
+Confirmed follow-up (2026-09-08, eleventh follow-up) after reviewing
+Tab 5's real correlation output (all negative, strongest -0.347 on
+Half-Life) alongside a genuine question: is 12 months simply too few
+independent observations per pair for the t-test to reliably detect a
+real (if modest) edge, given that each month's realized return
+differential is dominated by largely-independent, idiosyncratic
+stock-return noise? Answered honestly before any code change: standard
+error scales as `1/sqrt(n)`, so going from 12 to 48 months (4x) roughly
+halves estimation noise -- a real, but modest improvement, not a
+guarantee of newfound significance. If the true per-pair effect is small,
+more months will more reliably measure that small effect, not manufacture
+a large one; a still-noisy result after 48 months is itself a valid,
+informative answer, not evidence anything is broken.
+
+**Option A — longer per-pair test window, confirmed cap: 10 years total /
+48 months.** No engine changes needed (`simulate_monthly_walkforward` and
+related functions already accepted `n_months`/`train_years` as parameters
+with the maximum simply not exposed in the UI). Changes: Tab 1's existing
+"LICZBA MIESIĘCY" input max raised from 24 to 48; new n_months inputs
+(max 48) added to Tab 4 and Tab 5, threaded through to
+`run_theta_trailing_stability` and `run_monthly_walkforward_batch`
+respectively; data fetch period raised from 5y/6y to 10y everywhere this
+monthly mechanism is used (Tab 1's `analyze_pair`, Tab 4, Tab 5) --
+Tab 2 and Tab 3 (the discrete-mechanism tabs) are explicitly UNCHANGED,
+per direct instruction ("drugiej nie ruszaj niech bedzie jaka jest").
+Tickers with less than ~9-10 years of real history (recent IPOs) simply
+yield fewer usable months via the existing per-month data-sufficiency
+check -- already handled gracefully, no new logic needed.
+
+**Option B — pooled cross-pair significance test, confirmed scope: the
+SAME gate-filtered candidate set already shown in the per-pair table, not
+the unfiltered universe** ("dokładnie te same, przefiltrowane pary...
+biorąc dokładnie te same, przefiltrowane pary"). `run_monthly_walkforward_batch`
+now returns a tuple `(per_pair_df, pooled_monthly_alphas)` -- the pooled
+list collects every individual (pair, month) raw alpha value from every
+pair already included in the per-pair table, gathered inside the SAME
+loop that already runs the backtest (no duplicate computation). New
+function `compute_pooled_significance` runs one t-test on this pooled
+array. Verified with a purpose-built demonstration (8 synthetic pairs,
+each individually weak): only 2 of 8 pairs individually reached p<0.05,
+while the pooled test across all 96 observations gave t=5.082,
+p≈0.00000 -- a clean, concrete illustration of exactly the statistical-power
+argument being made (this answers "does the mechanism have a systematic
+effect across this set", a different and complementary question to any
+one pair's own significance, not a replacement for the per-pair ranking).
+
+**UI**: new "TEST ZBIORCZY" panel in Tab 5, positioned between the status
+message and the correlation bars, explaining the distinction in plain
+terms before showing the pooled n / mean / t-statistic / p-value.
+
+Full app integration recheck (57/57 callbacks -- same count, this
+modifies existing callbacks' Outputs/State/body rather than registering
+new ones), solver regression rerun (identical weights to every prior
+check in this project's history).
+
+---
+
+### 7l. Cross-Tab Consistency Audit — Screening-Window Mismatch, Stale Label, and a Correlation-Breaking `inf` (complete)
+
+Confirmed report (2026-09-08, twelfth follow-up): Tab 1's universe scan
+showed 19 pairs passing all 3 gates out of 630 surviving the drift
+pre-filter, but Tab 5's batch (same universe, same day, min_gates=3)
+found only 5. Explicit request: audit the WHOLE module for inconsistencies,
+not just this one, since "gdzieś już idziemy ale wszystko się rozjeżdża."
+
+**Root cause, found and confirmed, not guessed at:** Etap 7k raised the
+price-fetch window for Tabs 3, 4, and 5 from 5-6 years to 10 years, to
+support up to 48 test months for the theta mechanism. But those same
+tabs ALSO run `scan_universe_diagnostics` (the gate screen: P-Value,
+Half-Life, Hedge Ratio, Gates Passed) directly on that SAME extended
+fetch -- meaning the gate-screening test itself silently started running
+on a longer window than Tab 1's, which still screens on 5 years. A
+cointegration test over a longer window is inherently a STRICTER test (a
+relationship has to hold up over more time to pass) -- so "3/3 bramek"
+quietly stopped meaning the same thing across tabs. Confirmed directly, not
+inferred: a synthetic pair genuinely cointegrated only in its most recent
+5 years (independent, unrelated dynamics in the preceding 5) scored 0/3
+gates when screened on the full 10-year window, but 3/3 when screened on
+either a fresh 5-year fetch OR the last-5-years slice of the same 10-year
+fetch -- an exact, reproduced match of the reported 19-vs-5 discrepancy's
+mechanism. Tab 3 (`run_oos_validation`) turned out to have carried a
+version of this same class of bug since Etap 7e (it already screened on
+its own 6-year fetch, not 5 years) -- caught only now via this
+comprehensive pass, not previously noticed.
+
+**Fix:** new shared helper `_screening_slice(prices_df)` in
+`ui/module_relative_value.py` -- slices the last `GATE_SCREENING_YEARS`
+(5, a module-level constant) calendar years from whatever longer price
+history was already fetched, and is now used as the input to
+`scan_universe_diagnostics` in Tabs 3, 4, and 5 specifically (avoids a
+second network round-trip; the theta-mechanism backtests in those same
+tabs still receive the FULL longer-window `prices_df`, unaffected). **Tab 2
+deliberately left untouched**, per explicit instruction carried over from
+Etap 7j/7k ("drugiej nie ruszaj niech bedzie jaka jest") -- it already
+screens on 5 years and was never part of this bug. Verified: gate counts
+now agree exactly between a fresh 5-year fetch and a 5-year slice taken
+from a 10-year fetch, for the same underlying data.
+
+**Second issue found in the same pass:** the "Zwrot Skumulowany 12M [pp]"
+column name and label were hardcoded with "12M" in both `engine/pairs.py`
+(the underlying DataFrame column) and the Tab 5 UI, left over from before
+`n_months` became adjustable (Etap 7k) -- so the column kept saying "12M"
+even when the project owner ran the analysis with, say, 24 or 48 months.
+Fixed: the engine column is now generically named "Zwrot Skumulowany [pp]"
+(no month count baked in), and Tab 5's table header is built dynamically
+as `f"Zwrot Skum. {n_months}M [pp]"`, reflecting whatever value was
+actually used for that run.
+
+**Third issue, a genuine pre-existing bug caught incidentally while
+verifying the above changes end to end:** `compute_correlations` broke
+silently (numpy `RuntimeWarning`s about invalid subtraction/dot-product,
+originating inside `pandas.Series.corr()`) whenever a batch legitimately
+contained a pair with `Half-Life = float("inf")` (a documented, valid
+output of `_half_life` for a spread showing no mean reversion at all --
+not a rare edge case, several real universe pairs hit this). `+-inf`
+is NOT handled the way NaN is by the underlying correlation computation
+(NaN is excluded pairwise; inf corrupts the whole calculation). Fixed:
+both the candidate column and the target column are now passed through
+`.replace([np.inf, -np.inf], np.nan)` before correlating, letting
+pandas's existing NaN-pairwise-exclusion handle it correctly. Verified
+with a direct test (a 5-row DataFrame with one `inf` Half-Life value):
+before the fix, real `RuntimeWarning`s were raised; after, zero warnings,
+and the correlation for that column was correctly computed from the
+remaining 4 valid rows rather than being corrupted by the 5th.
+
+**New clarifying chart in Tab 5** (addressing "nie wiem na jakiej podstawie
+[Zwrot Skumulowany] są liczone... wyciągnięte z dupy"): a scatter of
+"Śr. Alpha Miesięczna" (x) vs. "Zwrot Skumulowany" (y) for the current
+batch, with a dashed reference line showing what the naive (non-compounded)
+`mean * n_months` product would look like -- makes visible, directly on
+the chart, that these are two different SUMMARIES of the same underlying
+per-month results (closely related, not independent or arbitrary), and
+that true compounding diverges from the naive product because it also
+depends on the ORDER of returns, not just their average.
+
+**Also added, addressing "jak ty pozycjonujesz w rankingu... nadal tego nie
+rozumiem":** explicit UI copy directly above the ranking table in Tab 5,
+stating plainly that rows are sorted by `|t-statystyka|` descending (not
+by raw Alpha), that this measures consistency relative to a pair's own
+month-to-month variability rather than sheer average size, and that the
+table's sort order has NO effect on the correlation bars or scatter
+charts above it (correlations are computed from the full unsorted set of
+pairs regardless of on-screen ordering).
+
+Full app integration recheck (57/57 callbacks -- same count, this pass
+modified existing callback bodies rather than registering new ones),
+solver regression rerun (identical weights to every prior check in this
+project's history).
+
+---
+
+### 7m. Rejected Experiment — Whole-Period Daily-Averaged Divergence ("Pomysł 1")
+
+Confirmed hypothesis tested (2026-09-08, thirteenth follow-up), and
+confirmed REJECTED after empirical testing -- recorded here specifically
+so this is not attempted again without knowing it was already tried and
+found not to work. Motivation: Tab 5's per-pair t-statistics (based on
+12-48 discrete monthly snapshots) looked noisy/inconsistent; hypothesized
+that averaging a SIGNED log-divergence between the theta-tilted equity
+curve and the 50/50 benchmark curve at DAILY resolution across the WHOLE
+multi-year test window (1000+ observations instead of 12-48) would give a
+materially less noisy per-pair estimate.
+
+**Built** (`mean_signed_log_divergence`, `run_theta_divergence_batch` --
+kept in `engine/pairs.py` as a working, tested function, but NOT wired
+into any UI tab): computes `mean_t(ln(equity_strategy(t)) -
+ln(equity_benchmark(t)))` across every day of the test window.
+
+**Rejected, confirmed by direct measurement, not assumption**: comparing
+this metric's coefficient of variation across 15 repeated random draws of
+the same underlying generative process against the existing monthly
+mean_alpha's own CV showed the NEW metric was, if anything, slightly
+WORSE (CV 0.67 vs 0.52), not better. Root cause, confirmed directly:
+lag-1 autocorrelation of the daily divergence LEVEL series was 0.9924, and
+even lag-21 (month-to-month) autocorrelation was 0.8605 -- both
+essentially describe the SAME cumulative path, not independent
+observations. Since the theta mechanism only makes a NEW decision once
+per `rebalance_days` (weight is frozen for the whole period), the true
+number of independent "bets" the mechanism makes is bounded by
+`n_months`, regardless of how finely the resulting cumulative curve is
+sampled -- averaging at daily resolution over a *cumulative* curve does
+not manufacture new independent information, it just re-weights the
+estimate toward however much cumulative drift has accrued by late in the
+window. This is a genuinely useful negative result, arrived at by testing
+the actual hypothesis rather than assuming it, and is why the module's
+real solutions for more statistical power remain Etap 7k's Option A (more
+independent months per pair) and Option B (pooling across pairs) --
+neither of which tries to extract more information from a single
+already-fixed set of monthly decisions.
+
+### 7n. Within-Period Measurement Precision ("Opcja B") and Window-Length Comparison (complete)
+
+Distinguished explicitly from Etap 7m's rejected approach, per the
+project owner's own clarification: NOT averaging across the whole
+multi-year cumulative curve (which failed), but improving the measurement
+of EACH already-independent period individually, by using the mean of
+DAILY signed tilt-effects WITHIN that one period instead of just the
+period's two endpoint prices. Crucially different because the daily
+returns being averaged here are confined to a single already-independent
+`rebalance_days`-long window -- they are not points on a persisting
+cumulative path spanning multiple decision periods, so this does not hit
+the autocorrelation problem that sank Etap 7m.
+
+**Verified BEFORE trusting it**, learning directly from the Etap 7m
+mistake: a controlled test held a known, fixed weight tilt and a known
+true expected daily divergence constant, then compared the variance of
+the OLD two-endpoint measurement against the NEW daily-averaged
+measurement across 3000 random noise realizations of the SAME true
+effect. Result: the new method's standard deviation was 95.3% LOWER than
+the old method's, and its mean was far closer to the true underlying
+value (the old method's endpoint-based measurement is itself distorted by
+the compounding of the whole price path between the two endpoints, not
+just the average daily separation). A follow-up test across 20 random
+seeds of the full `simulate_monthly_walkforward` function (not just the
+isolated calculation) showed mean |t-statistic| around 1.9 with 11/20
+draws crossing conventional significance -- a marked improvement over
+prior runs on comparable synthetic data.
+
+**Implementation** (`simulate_monthly_walkforward`): the two-endpoint
+`ret_a_month`/`ret_b_month` values are still computed and still used for
+TRUE compounding in `cumulative_alpha_pp` (which needs the actual realized
+return, not a proxy). Separately, `monthly_alpha_pp` -- the value that
+feeds the t-test, mean, and std -- is now computed as
+`(weight_a - 0.5) * mean_t(daily_ret_a(t) - daily_ret_b(t))` across every
+trading day within that one period, using `pandas.Series.pct_change()`.
+
+**Window-length comparison, confirmed follow-up question** ("czy nie
+lepiej wykorzystać np. 2 miesięczne okna i 24 okresy, lub 3 miesięczne i
+16 okresów"): a genuine bias-variance tradeoff -- fewer, LONGER
+independent periods average out more within-period noise per observation,
+but leave fewer independent observations overall; MORE, SHORTER periods
+give more observations but each is a noisier single decision. Not assumed
+to favor either side -- answered empirically per-universe. New function
+`compare_window_lengths` runs `run_monthly_walkforward_batch` three times
+over the SAME total ~4-year span and the SAME candidate pairs
+(`WINDOW_LENGTH_VARIANTS`: 1mo×48, 2mo×24, 3mo×16), all using the same
+Etap 7n precision fix for a fair comparison, and returns both a per-pair
+detail table and a per-variant summary (mean |t-statistic|, % of pairs
+individually significant). On one synthetic test batch (fast, well-scaled
+mean reversion, half-life ~10 sessions), 1mo×48 clearly outperformed the
+longer variants (mean |t|=4.16, 100% significant, vs. 2.85/83% and
+2.20/67%) -- consistent with the intuition that periods much longer than
+a pair's own reversion half-life let multiple reversion cycles wash out
+within one measurement, but this is one synthetic scenario, not a general
+rule; the real answer depends on the actual universe's pairs and is what
+this new tab is for.
+
+**UI**: sixth `dcc.Tab` ("PORÓWNANIE DŁUGOŚCI OKNA") -- minimum-gates
+filter, theta input, a grouped bar+line chart (mean |t-statistic| as
+bars, % significant as an overlaid line) comparing the three variants at
+a glance, and a detail table with every (pair, variant) combination.
+Self-contained fetch (10y, screened via the Etap 7l `_screening_slice`
+fix for consistency with the rest of the module).
+
+Full app integration recheck (58/58 callbacks -- 57 prior + 1 new), solver
+regression rerun (identical weights to every prior check in this
+project's history).
+
+---
+
 ## 8. Implementation Status & Development Roadmap
 
 ### Currently Implemented in Codebase:
