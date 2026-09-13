@@ -10,6 +10,7 @@ Moved out of quant_terminal.py (Etap 0 architecture split, PROJECT_CONTEXT.md)
 with NO behavior change.
 """
 import dash
+import itertools
 import traceback
 from datetime import datetime
 
@@ -32,11 +33,12 @@ from ui.app_instance import app
 from ui.theme import THEME, CLUSTER_PALETTE, CHART_COLORS, MATRIX_COLORSCALE, MATRIX_SEQUENTIAL_COLORSCALE
 from ui.components import generate_tws_matrix_styles, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule, parse_single_ticker_input
 from data import universe_store as uni
-from data.market_data import fetch_company_profile
+from data.market_data import fetch_company_profile, fetch_universe_prices
 from engine.clustering import (
     compute_semicovariance_matrix, semicov_to_semicorr, rmt_denoise_correlation,
     compute_elbow_eps, dtw_distance, compute_dtw_distance_matrix, kmedoids,
 )
+from engine.pairs import compute_persistence_qualifying_pairs, run_maximum_weight_pair_matching, canonicalize_pair_order_by_theta
 
 def build_dendrogram_figure(Z, active_tickers, ticker_to_cluster):
     dendro_data = dendrogram(Z, labels=active_tickers, no_plot=True)
@@ -634,3 +636,176 @@ def render_multi_asset_chart(active_assets, chart_scale, timeframe, raw_close_da
         xaxis=dict(showgrid=True, gridcolor="#1E1E28")
     )
     return fig
+
+
+
+
+# ---------------------------------------------------------------------------
+# Dobor w pary (Maximum Weight Matching) -- czysto informacyjne, Etap 7o
+# (2026-09-08, pietnasty follow-up). Dziala na SPOLKACH JUZ WYBRANYCH do
+# biezacego rebalansu (store-raw-close), nie na calym uniwersum -- to
+# oddzielne od skanera w module Relative Value, ktory dziala na calym
+# uniwersum niezaleznie od wyboru rebalansu.
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("panel-pair-matching-container", "style"),
+    Input("store-raw-close", "data"), prevent_initial_call=True,
+)
+def toggle_pair_matching_panel(raw_close_data):
+    """
+    Separate, minimal callback -- deliberately NOT added as another Output
+    to run_stage_01_ingestion (that function is large, already regression-
+    tested many times over the life of this project; a standalone
+    visibility toggle keeps this addition at zero risk to it).
+    """
+    if raw_close_data:
+        return {"display": "block", "marginBottom": "16px"}
+    return {"display": "none", "marginBottom": "16px"}
+
+
+def _circular_layout(nodes):
+    """Deterministic circular layout -- simple, always non-overlapping,
+    and predictable at any node count (unlike force-directed layouts,
+    which can look great or terrible depending on the specific graph)."""
+    n = len(nodes)
+    positions = {}
+    for i, node in enumerate(nodes):
+        angle = 2 * np.pi * i / n - np.pi / 2
+        positions[node] = (np.cos(angle), np.sin(angle))
+    return positions
+
+
+@app.callback(
+    Output("pairmatch-network-graph", "figure"),
+    Output("pairmatch-matrix-graph", "figure"),
+    Output("pairmatch-table", "children"),
+    Output("pairmatch-status", "children"),
+    Input("btn-pairmatch-run", "n_clicks"),
+    State("store-raw-close", "data"), State("pairmatch-theta", "value"),
+    prevent_initial_call=True,
+)
+def run_pair_matching_analysis(_n_clicks, raw_close_data, theta):
+    """
+    Confirmed fix (2026-09-08, sixteenth follow-up): re-fetches 10 years of
+    price data independently, rather than reusing `store-raw-close` (Stage
+    1's own fetch, deliberately kept at 5 years for clustering -- not
+    touched by this change). The theta persistence mechanism this panel
+    depends on needs up to ~9-10 years of history for its 48/24/16-month
+    variants to have genuine 5-year training windows throughout -- with
+    only 5 years available, early test months were silently skipped and
+    even the later, usable months were computed against a SHORTER,
+    non-ideal training window with no warning this was happening
+    (confirmed root cause after the project owner's own review of the
+    real results looked inconsistent with expectations).
+
+    `raw_close_data` (Stage 1's own store) is still used here, but ONLY to
+    read off WHICH tickers are currently selected for this rebalance --
+    not for their price values.
+    """
+    theta = theta or 0.15
+    empty_fig = go.Figure()
+    if not raw_close_data:
+        return empty_fig, empty_fig, html.Div(), html.Div("Brak danych -- najpierw uruchom Stage 1.", style={"color": THEME["neg"]})
+
+    selected_tickers = [c for c in pd.DataFrame(raw_close_data).columns if c != "Date"]
+    if len(selected_tickers) < 2:
+        return empty_fig, empty_fig, html.Div(), html.Div("Za mało spółek zaznaczonych do analizy par.", style={"color": THEME["neg"]})
+
+    prices_df, all_tickers = fetch_universe_prices(selected_tickers, period="10y")
+    if prices_df.empty or len(all_tickers) < 2:
+        return empty_fig, empty_fig, html.Div(), html.Div(
+            "Nie udało się pobrać wystarczająco długiej (10-letniej) historii cenowej dla zaznaczonych spółek.",
+            style={"color": THEME["neg"]}
+        )
+
+    canonical_pairs = []
+    for x, y in itertools.combinations(all_tickers, 2):
+        ticker_a, ticker_b, _t_used = canonicalize_pair_order_by_theta(
+            prices_df[x].dropna(), prices_df[y].dropna(), x, y, theta=theta
+        )
+        canonical_pairs.append({"Ticker A": ticker_a, "Ticker B": ticker_b})
+    pairs_df = pd.DataFrame(canonical_pairs)
+
+    qualifying = compute_persistence_qualifying_pairs(prices_df, pairs_df, theta=theta)
+    if qualifying.empty:
+        msg = html.Div("Żadna para nie spełnia progu (jednostronne p<0.10, t-statystyka>0) w żadnym z 3 okien.", style={"color": THEME["warn"]})
+        return empty_fig, empty_fig, html.Div(), msg
+
+    result = run_maximum_weight_pair_matching(qualifying)
+    G = result["graph"]
+    matched_pairs = result["matched_pairs"]
+    matched_edge_set = {(a, b) for a, b, _w in matched_pairs}
+    matched_tickers = {t for pair in matched_edge_set for t in pair}
+    graph_nodes = list(G.nodes())
+    never_qualified = sorted(set(all_tickers) - set(graph_nodes))
+    unmatched_all = sorted(set(all_tickers) - matched_tickers)
+
+    # --- Wykres 1: siec grafow (uklad kolowy) ---
+    positions = _circular_layout(graph_nodes)
+    net_fig = go.Figure()
+    for a, b, w in G.edges(data="weight"):
+        is_matched = (a, b) in matched_edge_set or (b, a) in matched_edge_set
+        x0, y0 = positions[a]; x1, y1 = positions[b]
+        net_fig.add_trace(go.Scatter(
+            x=[x0, x1], y=[y0, y1], mode="lines",
+            line=dict(color=THEME["pos"] if is_matched else THEME["border_strong"], width=4 if is_matched else 1,
+                      dash="solid" if is_matched else "dot"),
+            hoverinfo="text", text=f"{a}/{b}: t={w:.3f}", showlegend=False,
+        ))
+    node_x = [positions[n][0] for n in graph_nodes]
+    node_y = [positions[n][1] for n in graph_nodes]
+    node_colors = [THEME["pos"] if n in matched_tickers else THEME["text_dim"] for n in graph_nodes]
+    net_fig.add_trace(go.Scatter(
+        x=node_x, y=node_y, mode="markers+text", text=graph_nodes, textposition="middle center",
+        marker=dict(size=34, color=node_colors, line=dict(width=1, color=THEME["bg_base"])),
+        textfont=dict(size=9, color=THEME["bg_base"]), showlegend=False, hoverinfo="text",
+    ))
+    net_fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        margin=dict(l=20, r=20, t=20, b=20),
+        xaxis=dict(visible=False, range=[-1.3, 1.3]), yaxis=dict(visible=False, range=[-1.3, 1.3]),
+    )
+
+    # --- Wykres 2: macierz t-statystyk ---
+    matrix_tickers = graph_nodes
+    z = np.full((len(matrix_tickers), len(matrix_tickers)), np.nan)
+    idx = {t: i for i, t in enumerate(matrix_tickers)}
+    for a, b, w in G.edges(data="weight"):
+        z[idx[a]][idx[b]] = w
+        z[idx[b]][idx[a]] = w
+    matrix_fig = go.Figure(data=go.Heatmap(
+        z=z, x=matrix_tickers, y=matrix_tickers, colorscale="Blues", colorbar=dict(title="t-stat"),
+        hoverongaps=False, hovertemplate="%{y} / %{x}<br>t=%{z:.3f}<extra></extra>",
+    ))
+    for a, b in matched_edge_set:
+        for r, c in [(idx[a], idx[b]), (idx[b], idx[a])]:
+            matrix_fig.add_shape(type="rect", x0=c - 0.5, x1=c + 0.5, y0=r - 0.5, y1=r + 0.5,
+                                  line=dict(color=THEME["pos"], width=3))
+    matrix_fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        margin=dict(l=20, r=20, t=20, b=20),
+        xaxis=dict(tickfont=dict(size=9, color=THEME["text_dim"])), yaxis=dict(tickfont=dict(size=9, color=THEME["text_dim"])),
+    )
+
+    # --- Tabela podsumowania ---
+    rows = [{"Spółka A": a, "Spółka B": b, "t-statystyka": round(w, 3), "Status": "Wybrana para"} for a, b, w in matched_pairs]
+    for t in unmatched_all:
+        reason = "brak jakiejkolwiek kwalifikującej się pary" if t in never_qualified else "przegrana w konkurencji o skojarzenie"
+        rows.append({"Spółka A": t, "Spółka B": "—", "t-statystyka": None, "Status": f"Bez pary ({reason}) → klastrowanie"})
+    table = dash_table.DataTable(
+        columns=[{"name": c, "id": c} for c in ["Spółka A", "Spółka B", "t-statystyka", "Status"]],
+        data=rows, page_size=20, sort_action="native",
+        style_header=datatable_style_header(), style_data=datatable_style_data(), style_cell=datatable_style_cell(),
+        style_data_conditional=[
+            datatable_row_alt_rule(),
+            {"if": {"filter_query": '{Status} = "Wybrana para"'}, "color": THEME["pos"], "fontWeight": "bold"},
+        ],
+    )
+
+    status = html.Div(
+        f"{len(all_tickers)} spółek przeanalizowanych -- {len(qualifying)} par kwalifikujących się, "
+        f"{len(matched_pairs)} wybranych do skojarzenia, {len(unmatched_all)} bez pary (idą do klastrowania).",
+        style={"color": THEME["pos"]}
+    )
+    return net_fig, matrix_fig, table, status

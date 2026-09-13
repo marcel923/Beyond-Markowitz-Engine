@@ -442,6 +442,57 @@ app.layout = html.Div(style={
                         ])
                     ])
                 ]),
+
+                # Dobor w pary (Maximum Weight Matching) -- czysto informacyjne, Etap 7o
+                html.Div(id="panel-pair-matching-container", style={"display": "none", "marginBottom": "16px"}, children=[
+                    html.Div(style={"backgroundColor": THEME["bg_card"], "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}", "padding": "22px"}, children=[
+                        html.Div("RELATIVE VALUE -- DOBÓR W PARY (WYŁĄCZNIE INFORMACYJNE)", style={"fontSize": "11px", "color": THEME["text_dim"], "fontWeight": "bold", "marginBottom": "5px"}),
+                        html.H3("Maximum Weight Matching", style={"fontSize": "26px", "fontWeight": "700", "marginBottom": "12px"}),
+                        html.Div(
+                            "Pobiera NIEZALEŻNIE 10 lat historii dla obecnie zaznaczonych spółek (nie współdzieli 5-letnich danych ze "
+                            "Stage 1 -- mechanizm theta potrzebuje więcej historii, żeby 48-miesięczny wariant miał pełne 5-letnie okno "
+                            "treningowe w każdym miesiącu), dlatego może to potrwać dłużej niż inne operacje na tej karcie. Dla każdej "
+                            "pary kolejność spółek (którą traktować jako \"A\") jest automatycznie ustalana na kierunek dający wyższą "
+                            "t-statystykę -- regresja nie jest symetryczna, więc kolejność realnie wpływa na wynik. Sprawdza, które pary "
+                            "utrzymują statystycznie istotną (jednostronne p<0.10, t-statystyka > 0) dodatnią przewagę mechanizmu theta w "
+                            "co najmniej jednym z trzech okien czasowych (1×48, 2×24, 3×16 miesięcy). Spośród kwalifikujących się par "
+                            "wybiera zestaw, w którym KAŻDA spółka trafia do co najwyżej jednej pary, maksymalizując łączną sumę "
+                            "t-statystyk (dokładny algorytm Edmondsa, nie zachłanny wybór). Spółki bez pary wracają do zwykłego "
+                            "klastrowania powyżej. Wynik NIE wpływa jeszcze na wagi w Rebalansie.",
+                            style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
+                        ),
+                        html.Div(style={"display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap", "marginBottom": "12px"}, children=[
+                            html.Div(style={"minWidth": "140px"}, children=[
+                                html.Div("THETA (siła nudge)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                dcc.Input(id="pairmatch-theta", type="number", value=0.15, min=0.05, max=0.6, step=0.05, style={
+                                    "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border']}",
+                                    "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                                }),
+                            ]),
+                            html.Button("SPRAWDŹ DOBÓR W PARY", id="btn-pairmatch-run", n_clicks=0, style={
+                                "padding": "10px 20px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                                "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer", "height": "38px"
+                            }),
+                        ]),
+                        html.Div(id="pairmatch-status", style={"fontSize": "12px", "marginBottom": "16px"}),
+                        dcc.Loading(type="circle", color=THEME["accent"], children=[
+                            html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "20px"}, children=[
+                                html.Div([
+                                    html.Div("Sieć par kandydujących", style={"fontSize": "13px", "fontWeight": "bold", "marginBottom": "10px"}),
+                                    dcc.Graph(id="pairmatch-network-graph", config={"displayModeBar": False}, style={"height": "480px"}),
+                                ]),
+                                html.Div([
+                                    html.Div("Macierz t-statystyk", style={"fontSize": "13px", "fontWeight": "bold", "marginBottom": "10px"}),
+                                    dcc.Graph(id="pairmatch-matrix-graph", config={"displayModeBar": False}, style={"height": "480px"}),
+                                ]),
+                            ]),
+                            html.Div(style={"marginTop": "18px"}, children=[
+                                html.Div("SZCZEGÓŁY", style={"fontSize": "13px", "fontWeight": "bold", "marginBottom": "10px"}),
+                                html.Div(id="pairmatch-table"),
+                            ]),
+                        ]),
+                    ])
+                ]),
                 html.Div(id="error-output", style={"marginTop": "30px", "color": THEME["orange"], "fontSize": "14px", "fontWeight": "bold"}),
             ])
         ]),

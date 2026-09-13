@@ -47,6 +47,7 @@ from __future__ import annotations
 import itertools
 from typing import Dict, List, Optional, Tuple
 
+import networkx as nx
 import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
@@ -1560,3 +1561,214 @@ def compare_window_lengths(
         })
 
     return pd.DataFrame(all_rows), pd.DataFrame(summary_rows)
+
+
+# ---------------------------------------------------------------------------
+# Pair Assignment via Maximum Weight Matching (2026-09-08, fifteenth
+# follow-up) -- confirmed: informational only, does NOT touch Rebalance
+# weights yet. Every company joins AT MOST one pair; leftovers go to the
+# existing Ward/DTW/RMT clustering.
+# ---------------------------------------------------------------------------
+
+PERSISTENCE_P_ONESIDED_MAX = 0.10  # confirmed 2026-09-08 (raised from an initial 0.05 proposal,
+                                    # after the project owner's own review of several dozen pairs
+                                    # found 0.10 more stable while still excluding pairs like
+                                    # ASML/000660.KS that underperform 50/50)
+
+
+def compute_persistence_qualifying_pairs(
+    prices_df: pd.DataFrame, pairs_df: pd.DataFrame,
+    theta: float = DEFAULT_THETA, train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY,
+) -> pd.DataFrame:
+    """
+    Runs compare_window_lengths (1mo x48, 2mo x24, 3mo x16 -- Etap 7n) for
+    every candidate pair, and determines which pairs QUALIFY for pair
+    assignment under the confirmed persistence criterion (2026-09-08,
+    fifteenth follow-up): ONE-SIDED p-value < PERSISTENCE_P_ONESIDED_MAX
+    (0.10) AND t-statistic > 0, in AT LEAST ONE of the three window-length
+    variants ("OR" logic across variants -- a pair only needs to
+    demonstrate persistence at ONE granularity, not all three).
+
+    One-sided p-value, confirmed necessary: scipy's `ttest_1samp` (used
+    throughout this module) returns a TWO-SIDED p-value by construction.
+    Halving it gives the correct one-sided value ONLY when t_stat > 0 -- a
+    negative t-statistic can never support a one-sided "mean > 0"
+    alternative regardless of how small its two-sided p-value is (that
+    would indicate significant evidence the mean is NEGATIVE, the opposite
+    of what pair assignment should reward). Confirmed motivation from the
+    project owner's own review: without the t>0 requirement, a pair like
+    ASML/000660.KS -- persistently WORSE than 50/50 -- could still show a
+    small two-sided p-value and slip through on p-value alone.
+
+    `pairs_df` is expected to be a coarse, permissively-filtered candidate
+    set (confirmed: min_gates=1, NOT 2 -- the whole point of this
+    persistence test is to catch pairs the formal cointegration gates
+    under-value, e.g. memory-sector pairs with weak p-values but real
+    theta-mechanism persistence; requiring min_gates=2 as a PRE-filter
+    would reintroduce exactly the bias this mechanism exists to correct).
+
+    Returns
+    -------
+    pd.DataFrame, one row per QUALIFYING pair (a pair with none of its 3
+    variants qualifying is excluded entirely), sorted by "Best t-statystyka"
+    descending:
+        "Ticker A", "Ticker B", "Best t-statystyka" (the highest t-statistic
+        among the variants that individually qualified -- NOT the highest
+        t-statistic overall, since a non-qualifying variant's t-statistic
+        must never contribute), "Liczba okien qualif." (1-3, how many of
+        the three variants independently qualified -- informational, not
+        used as a further filter).
+    """
+    detail, _summary = compare_window_lengths(prices_df, pairs_df, theta=theta, train_years=train_years)
+    empty_cols = ["Ticker A", "Ticker B", "Best t-statystyka", "Liczba okien qualif."]
+    if detail.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    detail = detail.copy()
+    detail["p_onesided"] = detail.apply(
+        lambda r: (r["p-value (t-test)"] / 2.0) if r["t-statystyka"] > 0 else 1.0, axis=1
+    )
+    detail["qualifies"] = (detail["p_onesided"] < PERSISTENCE_P_ONESIDED_MAX) & (detail["t-statystyka"] > 0)
+
+    qualifying = detail[detail["qualifies"]]
+    if qualifying.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    grouped = qualifying.groupby(["Ticker A", "Ticker B"], as_index=False).agg(
+        **{"Best t-statystyka": ("t-statystyka", "max"), "Liczba okien qualif.": ("Wariant", "count")}
+    )
+    return grouped.sort_values("Best t-statystyka", ascending=False).reset_index(drop=True)
+
+
+def run_maximum_weight_pair_matching(qualifying_pairs_df: pd.DataFrame) -> Dict[str, object]:
+    """
+    Exact Maximum Weight Matching over the qualifying-pairs graph --
+    confirmed algorithm (2026-09-08, fifteenth follow-up): every company
+    is a node; every qualifying pair (from
+    compute_persistence_qualifying_pairs) is an edge weighted by its
+    "Best t-statystyka". `networkx.max_weight_matching` runs the exact
+    Edmonds' Blossom algorithm (polynomial time), NOT a greedy
+    "take-the-best-then-the-next" heuristic -- confirmed necessary because
+    greedy selection can strictly underperform: a classic counter-example
+    (edges A-B=10, A-C=9, B-D=9) has greedy pick A-B alone (total weight
+    10) while the true optimum is A-C + B-D (total weight 18) -- verified
+    directly against this exact counter-example before trusting the
+    library call for this project.
+
+    Every company appears in AT MOST one selected pair by construction (a
+    matching, by definition, has no node in more than one edge) -- a
+    company that doesn't end up in any selected pair (either because it
+    had no qualifying partner at all, or because its only qualifying
+    partners were "won" by a higher-weight pairing elsewhere) is reported
+    as unmatched and is expected to fall back to the existing
+    Ward/DTW/RMT clustering pipeline.
+
+    Parameters
+    ----------
+    qualifying_pairs_df : pd.DataFrame
+        Output of compute_persistence_qualifying_pairs (or any DataFrame
+        with "Ticker A", "Ticker B", "Best t-statystyka" columns).
+
+    Returns
+    -------
+    dict with keys:
+        "matched_pairs"     : list of (ticker_a, ticker_b, weight) tuples,
+                               the pairs actually selected by the matching
+        "unmatched_tickers" : sorted list of tickers that appeared in the
+                               qualifying-pairs graph but were NOT selected
+        "graph"             : the underlying networkx.Graph (nodes = every
+                               ticker that appears in at least one
+                               qualifying pair, edges = every qualifying
+                               pair with its weight) -- exposed for
+                               visualization (both the network-graph and
+                               matrix views need the full candidate graph,
+                               not just the final selected matching)
+    """
+    G = nx.Graph()
+    if qualifying_pairs_df.empty:
+        return {"matched_pairs": [], "unmatched_tickers": [], "graph": G}
+
+    for _, row in qualifying_pairs_df.iterrows():
+        G.add_edge(row["Ticker A"], row["Ticker B"], weight=float(row["Best t-statystyka"]))
+
+    matching = nx.max_weight_matching(G, maxcardinality=False)
+    matched_pairs = []
+    matched_tickers = set()
+    for a, b in matching:
+        a, b = sorted([a, b])
+        weight = G[a][b]["weight"]
+        matched_pairs.append((a, b, weight))
+        matched_tickers.add(a)
+        matched_tickers.add(b)
+    matched_pairs.sort(key=lambda x: x[2], reverse=True)
+
+    unmatched_tickers = sorted(set(G.nodes()) - matched_tickers)
+
+    return {"matched_pairs": matched_pairs, "unmatched_tickers": unmatched_tickers, "graph": G}
+
+
+# ---------------------------------------------------------------------------
+# Pair-Order Canonicalization (2026-09-08, sixteenth follow-up) -- confirmed
+# root cause of "swapping A/B gives different numbers for the same pair":
+# OLS regression is NOT symmetric (log(A) ~ log(B) fits a genuinely
+# different line than log(B) ~ log(A) unless correlation is perfect), so
+# hedge_ratio/spread/Z-score/theta-mechanism results all differ by
+# direction. Confirmed fix, applied at every point a pair is first formed
+# from two raw tickers: canonicalize using the SAME criterion now used for
+# qualification everywhere in this module (theta persistence), NOT
+# cointegration -- cointegration is confirmed purely informational from
+# this point forward, never a gate and never the basis for order choice.
+# ---------------------------------------------------------------------------
+
+def canonicalize_pair_order_by_theta(
+    prices_x: pd.Series, prices_y: pd.Series, ticker_x: str, ticker_y: str,
+    theta: float = DEFAULT_THETA, train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY,
+) -> Tuple[str, str, float]:
+    """
+    Determines which of the two possible (A, B) assignments for a pair of
+    tickers should be treated as canonical, using a SINGLE representative
+    theta-mechanism run in each direction (1-month x 48 periods -- the
+    same reference granularity used as the sort key in
+    compute_persistence_qualifying_pairs) rather than the full three-variant
+    compare_window_lengths, to keep the added cost to one extra
+    simulate_monthly_walkforward call per candidate pair (running the full
+    3-variant comparison in both directions, for every pair in a large
+    universe scan, was judged too expensive for what is only a direction
+    DECISION, not the final analysis -- the winning direction still gets
+    the full, un-shortcut treatment afterward by whatever function called
+    this).
+
+    Confirmed criterion (2026-09-08, sixteenth follow-up): whichever
+    direction's t-statistic is higher wins -- NOT cointegration p-value
+    (which this module no longer treats as a gate or a decision criterion
+    anywhere). This is self-consistent with
+    compute_persistence_qualifying_pairs's own qualification rule
+    (t-statistic > 0, one-sided p<0.10): picking the higher-t-statistic
+    direction simultaneously favors both a stronger signal AND, whenever
+    only one direction can possibly qualify at all, picks that one.
+
+    Returns
+    -------
+    (ticker_a, ticker_b, t_stat_used) : the canonical order (ticker_a
+    should be treated as "A" in every downstream computation for this
+    pair) and the reference t-statistic that decided it (for logging/
+    diagnostics -- not itself a qualification threshold).
+
+    If EITHER direction fails to produce a usable result (e.g.
+    insufficient shared price history for even one full 1x48 run), the
+    original (ticker_x, ticker_y) order is returned unchanged with
+    t_stat_used=0.0 -- there is nothing to canonicalize against.
+    """
+    result_xy = simulate_monthly_walkforward(prices_x, prices_y, theta=theta, train_years=train_years,
+                                              n_months=48, rebalance_days=21)
+    result_yx = simulate_monthly_walkforward(prices_y, prices_x, theta=theta, train_years=train_years,
+                                              n_months=48, rebalance_days=21)
+
+    t_xy = result_xy["t_stat"]
+    t_yx = result_yx["t_stat"]
+
+    if t_xy is None and t_yx is None:
+        return ticker_x, ticker_y, 0.0
+    if t_yx is None or (t_xy is not None and t_xy >= t_yx):
+        return ticker_x, ticker_y, float(t_xy)
+    return ticker_y, ticker_x, float(t_yx)

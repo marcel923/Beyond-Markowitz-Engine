@@ -2357,6 +2357,252 @@ project's history).
 
 ---
 
+### 7o. Pair Assignment via Maximum Weight Matching — informational Tab 1 panel (complete)
+
+Confirmed follow-up (2026-09-08, fifteenth follow-up): with the persistence
+testing methodology (Etap 7n's within-period precision fix, the three
+window-length variants) now producing sensible results on manual review,
+the project owner raised the natural next problem: many companies qualify
+for MULTIPLE persistent pairs simultaneously (e.g. A pairs well with both
+B and C), and picking greedily ("take the best pair, then the next")
+can strictly underperform a globally optimal assignment. Confirmed as
+exactly the well-known Maximum Weight Matching graph problem, with an
+EXACT polynomial-time solution (Edmonds' Blossom algorithm) rather than
+a heuristic to invent.
+
+**Persistence threshold, confirmed after the project owner's own review of
+several dozen pairs**: raised from an initially-proposed fixed t-statistic
+cutoff (1.660) to a ONE-SIDED p-value threshold of 0.10, combined with a
+hard requirement that t-statistic > 0. Two reasons, both confirmed
+directly: (1) the critical t-value for "p<0.05" depends on degrees of
+freedom, which differs across the three window-length variants (df=47 for
+1mo×48, df=23 for 2mo×24, df=15 for 3mo×16) -- a single fixed t-statistic
+threshold is not equivalent across variants, while p-value is
+automatically the correctly-scaled version of the same information; (2)
+`scipy.stats.ttest_1samp`'s p-value is two-sided by construction, but only
+POSITIVE persistence should ever qualify a pair -- confirmed directly via
+the project owner's own observed counter-example (ASML/000660.KS,
+persistently WORSE than 50/50) that a plain two-sided p-value threshold
+would wrongly admit a significantly NEGATIVE pair. Fixed by halving the
+two-sided p-value ONLY when t-statistic > 0 (defaulting to 1.0 — never
+qualifying — otherwise), verified directly against this exact reported
+pair's numbers (t=-2.463, two-sided p=0.0217) confirming it is correctly
+excluded despite what would otherwise look like a "significant" p-value.
+
+**Confirmed candidate-pool scope**: the persistence test runs against the
+FULL C(n,2) combination set among whichever tickers are CURRENTLY CHECKED
+in Tab 1's universe checklist (Etap 5) -- NOT gate-prefiltered at all (no
+`min_gates` requirement here), since this Tab 1 panel already operates on
+a small, pre-selected rebalance-candidate set (~30-40 names), unlike the
+Relative Value module's separate large-universe scanner. The project
+owner separately confirmed (same follow-up) that even the loose
+`min_gates=1` prefilter used elsewhere in the Relative Value module should
+NOT be a precondition for THIS mechanism: since formal cointegration gates
+have shown weak-to-negative correlation with actual persistence
+throughout this whole project arc, requiring them as a gate here would
+reintroduce exactly the bias this new methodology exists to correct
+(confirmed real-world motivating case: memory-sector pairs with weak
+formal p-values but genuine theta-mechanism persistence).
+
+**New engine functions**:
+- `compute_persistence_qualifying_pairs`: runs `compare_window_lengths`
+  (Etap 7n) for every candidate pair, applies the one-sided p<0.10 & t>0
+  filter with "OR" logic across the three variants (a pair needs to
+  qualify in only ONE window length, not all three), and reports the
+  BEST (highest) t-statistic among the variants that individually
+  qualified as the edge weight -- confirmed weight choice, since
+  t-statistic combines both the size and the month-to-month consistency
+  of the edge, rather than average alpha alone (which could reward a
+  single lucky period).
+- `run_maximum_weight_pair_matching`: builds a `networkx.Graph` (nodes =
+  companies, edges = qualifying pairs weighted by their best t-statistic)
+  and runs `networkx.max_weight_matching` (exact Blossom algorithm).
+  Verified directly against the textbook counter-example that motivates
+  using an exact algorithm over a greedy one (edges A-B=10, A-C=9, B-D=9
+  -- greedy picks A-B alone for total weight 10; the true optimum is
+  A-C + B-D for total weight 18) before trusting the library call for
+  this project; confirmed the full pipeline (persistence filter →
+  matching) preserves this property end to end on synthetic
+  theta-mechanism-generated data, with every company appearing in AT MOST
+  one selected pair by construction.
+
+**UI**: new informational panel in Tab 1 ("RELATIVE VALUE -- DOBÓR W PARY"),
+appearing automatically once Stage 1 ingestion populates `store-raw-close`
+(a small, standalone visibility-toggle callback was used instead of adding
+another Output to the large, already-repeatedly-regression-tested
+`run_stage_01_ingestion` function, to keep this addition at zero risk to
+it). Two complementary visualizations, confirmed jointly by the project
+owner after reviewing an inline mockup first:
+- **Network graph** (circular/deterministic layout, not a force-directed
+  one -- chosen for predictability at any node count rather than
+  aesthetics that can vary unpredictably by graph structure): thin dotted
+  gray edges for every qualifying-but-unselected pair, thick green edges
+  for the selected matching, green-filled nodes for matched companies,
+  dim gray nodes for unmatched ones.
+- **Matrix heatmap**: full N x N grid of every currently-selected ticker
+  that has at least one qualifying connection, cell color = t-statistic
+  (sequential colorscale, blank/NaN where no qualifying pair exists),
+  with a green border overlay (`fig.add_shape`) specifically marking the
+  cells corresponding to the SELECTED matching -- confirmed as the primary
+  tool for larger universes (30-40+ names), where the network graph's
+  crossing lines would become hard to read; the project owner explicitly
+  noted a circular network layout would likely become cluttered at that
+  scale, motivating the matrix as a complementary, better-scaling view
+  rather than a replacement.
+- A detail table lists every selected pair plus every unmatched ticker,
+  distinguishing "never had any qualifying pair" from "had a qualifying
+  pair but lost the competition for the final matching" (both fall back
+  to the existing Ward/DTW/RMT clustering).
+
+Verified end to end on a controlled 8-ticker synthetic scenario (3
+deliberately-constructed genuine pairs plus 2 unrelated tickers): the
+matching correctly identified and selected all 3 designed pairs; the 2
+unrelated tickers were correctly reported as unmatched, with the
+diagnostic message correctly attributing this to "lost the competition"
+rather than "no qualifying pair at all" once it was confirmed (a real,
+informative side-effect of the p<0.10 threshold across a moderate number
+of combinations) that a few additional spurious near-qualifying
+connections had, in fact, formed by chance among the unrelated tickers --
+exactly the kind of multiple-comparisons effect flagged as a risk earlier
+in this project's discussion of large-scale brute-force pair search
+("Pomysł 2"), observed here directly even at a small, controlled scale.
+
+Full app integration recheck (60/60 callbacks -- 58 prior + 2 new), solver
+regression rerun (identical weights to every prior check in this
+project's history). `networkx>=3.2` added to `requirements.txt`.
+
+**Explicitly still deferred, per the project owner's own confirmed
+sequencing**: this pair-assignment mechanism remains PURELY INFORMATIONAL
+-- it does not yet feed into Stage 1's SLSQP weights, and the
+uncertainty-in-denominator TPS reformulation discussed the same follow-up
+is a separate, not-yet-implemented step.
+
+---
+
+### 7p. Pair-Order Canonicalization + Unified Qualification Criterion — IN PROGRESS (partial, confirmed scope)
+
+Confirmed report (2026-09-08, sixteenth follow-up): manually re-checking
+pairs from the Etap 7o matching panel found that swapping which ticker is
+"A" vs "B" for the SAME pair (e.g. MCHP/SMTC) gave meaningfully different
+diagnostics and backtest results. Root cause, confirmed directly, not
+guessed: OLS regression is NOT symmetric -- `log(A) ~ log(B)` fits a
+genuinely different line than `log(B) ~ log(A)` unless correlation is
+perfect -- so hedge_ratio, spread, Z-score, and every theta-mechanism
+result downstream differ by direction. This was always true of
+`_hedge_ratio_and_spread` and `test_pair_cointegration`/`coint()`, but had
+never been explicitly flagged before this follow-up. Directly connected,
+same follow-up: a separately-reported chart pattern where the "worse"
+direction's weight almost never crosses 50/50 -- confirmed explanation: a
+poorly-fitting regression direction leaves a residual/spread that is more
+persistent drift than genuine mean-reversion, so the Z-score (and
+therefore weight) gets stuck on one sign for long stretches against a
+252-session ROLLING baseline, rather than oscillating as a true
+mean-reverting spread would.
+
+**Second, related confusion resolved the same follow-up**: the project
+owner found pairs from the Etap 7o matching panel (qualified there) that
+"failed" cointegration p-value when checked manually, and asked to unify
+this. Root cause: two DIFFERENT tests were both being labeled "p-value" --
+the formal Engle-Granger cointegration p-value (tests whether price
+LEVELS are linked) vs. the theta-mechanism persistence test's p-value
+(one-sample t-test on 12-48 monthly alpha values, tests whether the
+mechanism's own realized edge differs from zero). A pair can fail
+cointegration in both directions while still showing genuine, persistent
+theta-mechanism outperformance -- not a bug, but a naming collision that
+made two unrelated numbers look contradictory. **Confirmed resolution**:
+theta persistence (one-sided p<0.10, t>0, Etap 7o's own criterion) becomes
+the SOLE qualification criterion EVERYWHERE in this module going forward;
+cointegration becomes PURELY INFORMATIONAL, never a gate, clearly labeled
+as such wherever it still appears. Also confirmed and worth recording
+precisely: the project owner's own restatement of what the theta
+persistence p-value measures -- "ocena różnicy dynamicznego portfela od
+portfela 50/50, tylko nie uwzględnia w którą stronę, dlatego t-statystyka
+musi być dodatnia" -- is exactly correct and was confirmed as such: the
+two-sided t-test p-value alone cannot distinguish a significant POSITIVE
+edge from a significant NEGATIVE one (a persistently-losing pair scores
+just as "significant" on p-value alone), which is precisely why t>0 is a
+separate, mandatory second condition, not a redundant one.
+
+**New engine function**: `canonicalize_pair_order_by_theta(prices_x,
+prices_y, ticker_x, ticker_y, theta, train_years)` -- runs ONE
+representative theta-mechanism backtest (1mo x48, the same reference
+granularity already used as compute_persistence_qualifying_pairs's own
+sort key) in EACH direction and returns whichever assignment has the
+higher t-statistic as canonical. Confirmed criterion (2026-09-08,
+seventeenth follow-up, explicit): the SAME theta-persistence criterion
+used for qualification everywhere else, NOT cointegration p-value --
+self-consistent, since a direction that already fails to qualify at all
+can never win the canonicalization either. Deliberately uses a single
+1x48 run rather than the full three-variant `compare_window_lengths` in
+both directions, to keep the added cost to one extra
+`simulate_monthly_walkforward` call per candidate pair rather than six.
+Verified directly against a constructed asymmetric-noise scenario (one
+ticker with small idiosyncratic variance, the other with materially
+larger added noise on top of the same true mean-reverting spread --
+exactly the kind of heteroscedasticity that produces OLS direction-
+asymmetry): the two directions gave t=3.530 vs t=3.142, and
+canonicalization correctly selected the higher one. Falls back to the
+original, unchanged order (with t_stat_used=0.0) when neither direction
+produces a usable result, rather than raising.
+
+**A second, independently-discovered bug, found while wiring
+canonicalization into the Etap 7o matching panel**: that panel reused
+Stage 1's `store-raw-close`, which is deliberately fetched at only 5 years
+(fine for clustering, Stage 1's own purpose) -- but the theta-persistence
+mechanism needs up to ~9-10 years for its 48/24/16-month variants to have
+genuine 5-year training windows throughout. With only 5 years available,
+early test months were silently skipped entirely, and even the LATER,
+"usable" months were computed against a shortened, non-ideal training
+window -- with no warning this compromise was happening. This plausibly
+degraded the panel's real-world results without ever surfacing an error.
+**Fixed**: the panel now performs its OWN independent 10-year fetch
+(reading `store-raw-close` only to learn which tickers are currently
+selected, not for their price values) -- Stage 1's own 5-year fetch for
+clustering is completely untouched.
+
+**Confirmed and applied so far** (2 of the identified 3+ entry points):
+1. Tab 1's manual pair-picker (`analyze_pair`): now canonicalizes order
+   before computing diagnostics, and now computes + displays the theta-
+   persistence qualification check (✓/✗, with its own t-statistic) as the
+   PRIMARY result, with every cointegration-derived badge explicitly
+   relabeled "(informacyjnie)" and the old "gates_passed/3 -- kwalifikuje
+   się" summary line removed (cointegration no longer gates anything, so a
+   pass/fail summary based on it was actively misleading to keep). Verified
+   directly: calling this function with the same two tickers in BOTH
+   orders now produces byte-identical `hedge_ratio` and canonical
+   ticker_a/ticker_b in both cases.
+2. Etap 7o's Rebalance-tab matching panel: canonicalizes every candidate
+   combination before building its pairs list, on top of the independent-
+   fetch fix above.
+
+**Explicitly NOT yet done, scope confirmed but deferred to a following
+turn**:
+- `scan_universe_diagnostics` itself (the underlying universe-wide
+  cointegration scanner, feeding Tabs 1's own scan button, 2, 3, 4, 5, 6's
+  candidate-pair lists) does not yet canonicalize its own (Ticker A,
+  Ticker B) assignment, which today comes from whatever order
+  `itertools.combinations` happens to produce over the universe ticker
+  list. An open question was posed to the project owner and not yet
+  answered as of this entry: since cointegration is now purely
+  informational everywhere, does the SAME pair showing different
+  informational cointegration numbers in different tabs (depending on
+  which of several inconsistent fetch windows was used to screen it --
+  5y in Tabs 1/2, 10y-sliced-to-5y via `_screening_slice` in Tabs 3/4/5/6)
+  still need to be unified, or is this now acceptable since nothing gates
+  on it any more.
+- The broader UI relabeling pass (distinguishing "p-value (kointegracja,
+  informacyjnie)" from "p-value (trwałość theta)" consistently across
+  Tabs 2, 3, 4, 5, 6, and reconsidering whether those tabs' `min_gates`
+  cointegration-based dropdown filters should be replaced by a
+  theta-persistence-based filter instead, for full consistency with the
+  new confirmed single-criterion design) has not yet been started.
+
+Full app integration recheck after this partial pass (60/60 callbacks --
+same count, modified existing callbacks), solver regression rerun
+(identical weights to every prior check in this project's history).
+
+---
+
 ## 8. Implementation Status & Development Roadmap
 
 ### Currently Implemented in Codebase:

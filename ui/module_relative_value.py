@@ -47,7 +47,8 @@ from engine.pairs import (
     scan_universe_diagnostics, evaluate_pair_diagnostics, simulate_pair_strategy,
     run_backtest_batch, compute_correlations, run_walk_forward_validation,
     run_theta_trailing_stability, simulate_monthly_theta_curve, run_monthly_walkforward_batch,
-    compute_pooled_significance, compare_window_lengths,
+    compute_pooled_significance, compare_window_lengths, compute_persistence_qualifying_pairs,
+    canonicalize_pair_order_by_theta,
 )
 
 
@@ -227,24 +228,45 @@ def analyze_pair(_n_clicks, ticker_a, ticker_b):
     if prices_df.empty or ticker_a not in valid or ticker_b not in valid:
         return html.Div(f"Nie udało się pobrać danych cenowych dla {ticker_a}/{ticker_b}.", style={"color": THEME["neg"]}), None
 
-    pair_df = prices_df[[ticker_a, ticker_b]].dropna(how="any")
-    if len(pair_df) < 534:  # TRADING_DAYS_2Y + 30, ta sama minimalna dlugosc co w skanerze
+    pair_df_raw = prices_df[[ticker_a, ticker_b]].dropna(how="any")
+    if len(pair_df_raw) < 534:  # TRADING_DAYS_2Y + 30, ta sama minimalna dlugosc co w skanerze
         return html.Div(f"Za mało wspólnej historii cenowej dla {ticker_a}/{ticker_b} (potrzeba min. ~2Y+).", style={"color": THEME["neg"]}), None
 
+    # Confirmed fix (2026-09-08, szesnasty follow-up): OLS nie jest symetryczna --
+    # regresja log(X)~log(Y) daje INNY wynik niz log(Y)~log(X), wiec kolejnosc
+    # A/B realnie wplywa na hedge ratio, spread, Z-score i caly mechanizm theta.
+    # Kanonizacja wybiera kierunek na podstawie TEGO SAMEGO kryterium co reszta
+    # modulu (trwalosc theta), nie kointegracji -- ta jest juz tylko informacyjna.
+    ticker_a, ticker_b, _t_used = canonicalize_pair_order_by_theta(
+        pair_df_raw[ticker_a], pair_df_raw[ticker_b], ticker_a, ticker_b
+    )
+    pair_df = prices_df[[ticker_a, ticker_b]].dropna(how="any")
     pa, pb = pair_df[ticker_a], pair_df[ticker_b]
     diag = evaluate_pair_diagnostics(pa, pb)
 
+    # Confirmed (2026-09-08, szesnasty follow-up): jedyne prawdziwe kryterium
+    # kwalifikacji to trwalosc mechanizmu theta (jednostronne p<0.10, t>0),
+    # NIE kointegracja -- ta zostaje ponizej wylacznie jako informacja.
+    single_pair_df = pd.DataFrame([{"Ticker A": ticker_a, "Ticker B": ticker_b}])
+    persistence = compute_persistence_qualifying_pairs(prices_df, single_pair_df)
+    theta_qualifies = not persistence.empty
+
     badges = html.Div(children=[
-        _diagnostic_badge("KOINTEGRACJA (p-value)", f"{diag['p_value']:.5f}", diag["coint_pass"]),
-        _diagnostic_badge("HALF-LIFE", f"{diag['half_life']:.1f} sesji" if diag['half_life'] not in (float('inf'),) else "brak powrotu", diag["half_life_pass"]),
-        _diagnostic_badge("HEDGE RATIO (γ)", f"{diag['hedge_ratio']:.3f}", diag["hedge_ratio_pass"]),
+        html.Div(
+            f"{'✓ KWALIFIKUJE SIĘ' if theta_qualifies else '✗ NIE KWALIFIKUJE SIĘ'} -- trwałość mechanizmu theta "
+            f"(jednostronne p<0.10, t-statystyka>0, w co najmniej jednym z 3 okien czasowych)"
+            + (f", najlepsza t-statystyka={persistence.iloc[0]['Best t-statystyka']:.3f}" if theta_qualifies else ""),
+            style={"fontSize": "13px", "fontWeight": "700", "color": THEME["pos"] if theta_qualifies else THEME["warn"], "marginBottom": "14px"}
+        ),
+        html.Div("Poniżej -- WYŁĄCZNIE informacyjnie (kointegracja nie jest tu kryterium kwalifikacji):",
+                 style={"fontSize": "11px", "color": THEME["text_dim"], "fontStyle": "italic", "marginBottom": "8px"}),
+        _diagnostic_badge("KOINTEGRACJA (p-value, informacyjnie)", f"{diag['p_value']:.5f}", diag["coint_pass"]),
+        _diagnostic_badge("HALF-LIFE (informacyjnie)", f"{diag['half_life']:.1f} sesji" if diag['half_life'] not in (float('inf'),) else "brak powrotu", diag["half_life_pass"]),
+        _diagnostic_badge("HEDGE RATIO (γ, kanoniczny kierunek)", f"{diag['hedge_ratio']:.3f}", diag["hedge_ratio_pass"]),
         html.Div(style={"display": "inline-block", "marginRight": "22px", "marginBottom": "8px"}, children=[
             html.Div("ŚR. ROZBIEŻNOŚĆ 5Y (log, informacyjnie)", style={"fontSize": "10px", "color": THEME["text_label"]}),
             html.Div(f"{diag['avg_relative_divergence']:.3f}", style={"fontSize": "13px", "fontWeight": "600", "color": THEME["text_dim"]}),
         ]),
-        html.Div(style={"marginTop": "6px", "fontSize": "12px", "fontWeight": "700",
-                         "color": THEME["pos"] if diag["all_passed"] else THEME["warn"]},
-                 children=f"{diag['gates_passed']}/3 bramek -- {'kwalifikuje się do dalszej analizy' if diag['all_passed'] else 'NIE kwalifikuje się formalnie, ale można eksplorować poniżej'}"),
     ])
 
     cached = {

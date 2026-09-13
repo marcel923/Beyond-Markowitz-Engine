@@ -11,3 +11,8 @@ statsmodels>=0.14  # engine/pairs.py -- Engle-Granger cointegration test (statsm
                     # for why that distinction matters -- plain ADF critical values understate how
                     # extreme the test statistic needs to be for residuals from an estimated regression).
 scikit-learn>=1.9
+networkx>=3.2  # engine/pairs.py -- max_weight_matching (exact Blossom algorithm) for the pair-assignment
+                # problem: every company can join AT MOST one pair, chosen to maximize total t-statistic
+                # across the whole universe -- NOT a greedy "take the best pair, then the next" heuristic,
+                # which can miss a strictly better combination (see PROJECT_CONTEXT.md for the worked
+                # counter-example that motivated using the exact algorithm instead).
