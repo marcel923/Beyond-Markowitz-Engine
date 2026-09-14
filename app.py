@@ -29,4 +29,14 @@ import ui.module_relative_value # noqa: F401  (registers Relative Value pair-scr
 import ui.layout                # noqa: F401  (sets app.layout as an import side-effect)
 
 if __name__ == "__main__":
-    app.run(debug=True, port=8050)
+    # use_reloader=False, confirmed fix (2026-09-08, osiemnasty follow-up): debug=True
+    # enables Werkzeug's auto-reloader by default, which spawns a SEPARATE monitor
+    # process on top of the actual app process -- this is a documented source of
+    # background-callback failures with DiskcacheManager (Etap 7q): the multiprocessing
+    # worker can end up talking to the wrong process, so progress updates (and
+    # sometimes the whole background task) never make it back to the browser at all,
+    # with NO error shown -- confirmed root cause of "wlaczylem analize, zaden pasek
+    # sie nie pojawil". debug=True itself (error pages, callback exception detail)
+    # is kept; only the reloader is disabled. Restart the server manually after
+    # editing code while this is off, since it will no longer auto-restart.
+    app.run(debug=True, use_reloader=False, port=8050)

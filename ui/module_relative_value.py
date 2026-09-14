@@ -48,7 +48,8 @@ from engine.pairs import (
     run_backtest_batch, compute_correlations, run_walk_forward_validation,
     run_theta_trailing_stability, simulate_monthly_theta_curve, run_monthly_walkforward_batch,
     compute_pooled_significance, compare_window_lengths, compute_persistence_qualifying_pairs,
-    canonicalize_pair_order_by_theta,
+    canonicalize_pair_order_by_theta, compute_theta_qualifying_pairs_two_stage,
+    cheap_theta_screen_candidates,
 )
 
 
@@ -107,17 +108,30 @@ def _screening_slice(prices_df):
     Output("relval-results-table", "children"),
     Output("relval-scan-status", "children"),
     Input("btn-relval-scan", "n_clicks"),
+    background=True, progress=[Output("relval-scan-status", "children", allow_duplicate=True)],
     prevent_initial_call=True,
 )
-def run_relative_value_scan(n_clicks):
+def run_relative_value_scan(set_progress, n_clicks):
     """
-    Fetches 5Y prices for EVERY ticker in universe_store, then runs
-    scan_universe_diagnostics (full gate-by-gate diagnostics for every pair
-    surviving the cheap drift pre-filter -- including near-misses, not just
-    fully-qualifying pairs). Blocking (no background-callback infrastructure
-    in this pass, confirmed scope) -- dcc.Loading wrapping this Output
-    shows a spinner for the duration, which for a large universe is
-    genuinely a multi-minute wait, not a UX bug.
+    Fetches 10Y prices for EVERY ticker in universe_store (confirmed
+    upgrade, 2026-09-08 nineteenth follow-up -- previously only 5Y, which
+    meant this scanner could NOT canonicalize pair order the same way
+    every other part of this module does, so the SAME pair could show
+    different P-Value/Half-Life/Hedge Ratio numbers here than in the
+    manual pair picker below, even within this same tab -- confirmed root
+    cause of a reported persisting discrepancy), then runs
+    scan_universe_diagnostics with `full_history_df` supplied so every
+    pair's (Ticker A, Ticker B) order is canonicalized via the SAME
+    theta-persistence criterion used everywhere else (Etap 7p/7q).
+    Cointegration gates themselves are UNCHANGED here -- this scanner still
+    exists to show the full cointegration diagnostic (including
+    near-misses), and Tabs 2/3's own candidate selection still depends on
+    its "Gates Passed" output, neither of which this follow-up touches.
+
+    Runs as a background callback with live progress (added alongside the
+    10Y/canonicalization upgrade above, since canonicalizing doubles the
+    cost of every combination -- see Etap 7q/7r for the same pattern used
+    everywhere else in this module).
     """
     tickers = [c["Ticker"] for c in uni.list_companies()]
     if len(tickers) < 2:
@@ -126,7 +140,8 @@ def run_relative_value_scan(n_clicks):
             style={"color": THEME["neg"]}
         )
 
-    prices_df, valid_tickers = fetch_universe_prices(tickers, period="5y")
+    set_progress([f"Pobieram 10 lat historii cen dla {len(tickers)} spółek..."])
+    prices_df, valid_tickers = fetch_universe_prices(tickers, period="10y")
     failed_note = _failed_tickers_note(tickers, valid_tickers)
     if prices_df.empty or len(valid_tickers) < 2:
         return html.Div(), html.Div([
@@ -134,13 +149,17 @@ def run_relative_value_scan(n_clicks):
             failed_note,
         ] if failed_note else [html.Div("Nie udało się pobrać wystarczających danych cenowych dla uniwersum (sprawdź połączenie z yfinance).", style={"color": THEME["neg"]})])
 
-    full_df = scan_universe_diagnostics(prices_df, tickers=valid_tickers)
+    n_possible = len(valid_tickers) * (len(valid_tickers) - 1) // 2
+    def _report_scan_progress(i, total):
+        set_progress([f"Skanuję kointegrację i kanonizuję kolejność: kombinacja {i}/{total}..."])
+    set_progress([f"Skanuję kointegrację dla do {n_possible} kombinacji..."])
+    full_df = scan_universe_diagnostics(_screening_slice(prices_df), tickers=valid_tickers, full_history_df=prices_df, on_progress=_report_scan_progress)
 
     if full_df.empty:
         status = html.Div([
             html.Div(
                 f"Przeskanowano {len(valid_tickers)} spółek ({date.today().isoformat()}) -- "
-                f"żadna para nie przeszła nawet progu dryfu 2Y (35 p.p.).",
+                f"żadna para nie ma wystarczająco długiej wspólnej historii cenowej.",
                 style={"color": THEME["text_dim"]}
             ),
         ] + ([failed_note] if failed_note else []))
@@ -155,7 +174,7 @@ def run_relative_value_scan(n_clicks):
             {"name": "Spółka A", "id": "Ticker A"}, {"name": "Spółka B", "id": "Ticker B"},
             {"name": "Bramki", "id": "Bramki"}, {"name": "Status", "id": "Status"},
             {"name": "Śr. Rozbieżność 5Y (log)", "id": "Avg Relative Divergence", "type": "numeric", "format": {"specifier": ".3f"}},
-            {"name": "p-value", "id": "P-Value", "type": "numeric", "format": {"specifier": ".5f"}},
+            {"name": "p-value (kointegracja)", "id": "P-Value", "type": "numeric", "format": {"specifier": ".5f"}},
             {"name": "Half-Life [sesje]", "id": "Half-Life", "type": "numeric", "format": {"specifier": ".1f"}},
             {"name": "Hedge Ratio (γ)", "id": "Hedge Ratio", "type": "numeric", "format": {"specifier": ".3f"}},
         ],
@@ -173,7 +192,8 @@ def run_relative_value_scan(n_clicks):
     status = html.Div([
         html.Div(
             f"Przeskanowano {len(valid_tickers)} spółek ({date.today().isoformat()}) -- "
-            f"{len(full_df)} par przeszło próg dryfu 2Y, z czego {n_qualifying} spełnia wszystkie 4 bramki. "
+            f"{len(full_df)} par ma wystarczająco długą wspólną historię, z czego {n_qualifying} spełnia wszystkie 3 bramki kointegracji "
+            f"(informacyjnie -- nie kryterium kwalifikacji dla mechanizmu theta, patrz Zakładki 4/5/6). "
             f"Reszta pokazana jako near-miss (kolumna \"Bramki\").",
             style={"color": THEME["pos"] if n_qualifying else THEME["warn"]}
         ),
@@ -693,17 +713,22 @@ STABILITY_THRESHOLD = 0.8  # confirmed empirycznie przez wlasciciela projektu
     Output("relval-monthly-status", "children"),
     Input("btn-relval-monthly-run", "n_clicks"),
     State("relval-monthly-min-gates", "value"), State("relval-monthly-theta", "value"), State("relval-monthly-nmonths", "value"),
+    background=True, progress=[Output("relval-monthly-status", "children", allow_duplicate=True)],
     prevent_initial_call=True,
 )
-def run_monthly_persistence_test(_n_clicks, min_gates, theta, n_months):
+def run_monthly_persistence_test(set_progress, _n_clicks, min_gates, theta, n_months):
     """
-    Self-contained, fetches 6Y fresh (5Y train + up to 12 test months),
-    matching the pattern of the other three sub-tabs. Candidate pairs come
-    from a full-window scan filtered by min_gates -- purely a coarse
-    initial filter; cointegration p-value plays NO further role anywhere
-    in this tab (confirmed design, 2026-09-08 seventh follow-up: "nie wiem
-    czy p-value jest tu w ogole przydatne... ciagle gdzies je wrzucasz" --
-    it is deliberately absent from both the chart and the table here).
+    Self-contained, fetches 10Y fresh (5Y train + up to 48 test months for
+    the gate, though this tab's own Trailing Score still uses `n_months`
+    as chosen by the user). Candidate pairs qualify via the two-stage
+    theta-persistence gate (`compute_theta_qualifying_pairs_two_stage`,
+    Etap 7q/7r) -- cointegration plays NO role in candidate selection here
+    at all (confirmed design, unified 2026-09-08 eighteenth follow-up: the
+    project owner's own much earlier observation, "nie wiem czy p-value
+    jest tu w ogole przydatne... ciagle gdzies je wrzucasz", is exactly
+    why cointegration was demoted to purely informational everywhere this
+    mechanism is evaluated -- it is deliberately absent from both the
+    chart and the table here).
 
     Combines two DIFFERENT mechanisms by design, made explicit rather than
     silently mixed: "IS Score" reuses run_walk_forward_validation's
@@ -726,25 +751,37 @@ def run_monthly_persistence_test(_n_clicks, min_gates, theta, n_months):
     """
     theta = theta or 0.15
     n_months = int(n_months) if n_months else 12
+    set_progress(["Wczytuję listę spółek z uniwersum..."])
 
     tickers = [c["Ticker"] for c in uni.list_companies()]
     empty_fig = go.Figure()
     if len(tickers) < 2:
         return empty_fig, html.Div(), html.Div("Uniwersum ma mniej niż 2 spółki.", style={"color": THEME["neg"]})
 
+    set_progress([f"Pobieram 10 lat historii cen dla {len(tickers)} spółek..."])
     prices_df, valid_tickers = fetch_universe_prices(tickers, period="10y")
     failed_note = _failed_tickers_note(tickers, valid_tickers)
     if prices_df.empty or len(valid_tickers) < 2:
         msgs = [html.Div("Nie udało się pobrać danych cenowych dla uniwersum.", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
         return empty_fig, html.Div(), html.Div(msgs)
 
-    full_scan = scan_universe_diagnostics(_screening_slice(prices_df), tickers=valid_tickers)
-    candidate_pairs = full_scan[full_scan["Gates Passed"] >= min_gates]
+    n_possible = len(valid_tickers) * (len(valid_tickers) - 1) // 2
+    def _report_screen_progress(label, i, total):
+        if label == "Etap 1: tanie sito":
+            set_progress([f"Tanie sito theta (kanonizacja): kombinacja {i}/{total}..."])
+        else:
+            set_progress([f"Pełny test trwałości ({label}): para {i}/{total}..."])
+    set_progress([f"Kanonizuję i przesiewam do {n_possible} kombinacji tanim testem theta..."])
+    qualifying = compute_theta_qualifying_pairs_two_stage(prices_df, valid_tickers, theta=theta, on_progress=_report_screen_progress)
+    candidate_pairs = qualifying[qualifying["Liczba okien qualif."] >= min_gates]
     if candidate_pairs.empty:
-        msgs = [html.Div(f"Żadna para nie ma co najmniej {min_gates}/3 bramek.", style={"color": THEME["warn"]})] + ([failed_note] if failed_note else [])
+        msgs = [html.Div(f"Żadna para nie kwalifikuje się w co najmniej {min_gates}/3 oknach czasowych (jednostronne p<0.10, t>0).", style={"color": THEME["warn"]})] + ([failed_note] if failed_note else [])
         return empty_fig, html.Div(), html.Div(msgs)
 
+    n_candidates = len(candidate_pairs)
+    set_progress([f"Liczę IS Score (mechanizm progowy, 5 lat treningu) na {n_candidates} parach..."])
     is_scores = run_walk_forward_validation(prices_df, candidate_pairs, test_years=1)
+    set_progress([f"Liczę Trailing Score (mechanizm theta, {n_months} miesięcy) na {n_candidates} parach..."])
     trailing_scores = run_theta_trailing_stability(prices_df, candidate_pairs, theta=theta, n_months=n_months)
 
     if is_scores.empty or trailing_scores.empty:
@@ -836,9 +873,10 @@ def run_monthly_persistence_test(_n_clicks, min_gates, theta, n_months):
     Output("relval-thetabatch-status", "children"),
     Input("btn-relval-thetabatch-run", "n_clicks"),
     State("relval-thetabatch-min-gates", "value"), State("relval-thetabatch-theta", "value"), State("relval-thetabatch-nmonths", "value"),
+    background=True, progress=[Output("relval-thetabatch-status", "children", allow_duplicate=True)],
     prevent_initial_call=True,
 )
-def run_theta_batch_attribution(_n_clicks, min_gates, theta, n_months):
+def run_theta_batch_attribution(set_progress, _n_clicks, min_gates, theta, n_months):
     """
     Mirrors run_batch_attribution (Tab 2) structurally -- same correlation-bar
     + scatter + ranked-table layout -- but powered by
@@ -874,28 +912,54 @@ def run_theta_batch_attribution(_n_clicks, min_gates, theta, n_months):
     """
     theta = theta or 0.15
     n_months = int(n_months) if n_months else 12
+    set_progress(["Wczytuję listę spółek z uniwersum..."])
 
     tickers = [c["Ticker"] for c in uni.list_companies()]
     empty_fig = go.Figure()
     if len(tickers) < 2:
         return html.Div(), empty_fig, empty_fig, empty_fig, html.Div(), html.Div(), html.Div("Uniwersum ma mniej niż 2 spółki.", style={"color": THEME["neg"]})
 
+    set_progress([f"Pobieram 10 lat historii cen dla {len(tickers)} spółek..."])
     prices_df, valid_tickers = fetch_universe_prices(tickers, period="10y")
     failed_note = _failed_tickers_note(tickers, valid_tickers)
     if prices_df.empty or len(valid_tickers) < 2:
         msgs = [html.Div("Nie udało się pobrać danych cenowych dla uniwersum.", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
         return html.Div(), empty_fig, empty_fig, empty_fig, html.Div(), html.Div(), html.Div(msgs)
 
-    full_scan = scan_universe_diagnostics(_screening_slice(prices_df), tickers=valid_tickers)
-    candidate_pairs = full_scan[full_scan["Gates Passed"] >= min_gates]
+    n_possible = len(valid_tickers) * (len(valid_tickers) - 1) // 2
+
+    def _report_screen_progress(label, i, total):
+        if label == "Etap 1: tanie sito":
+            set_progress([f"Tanie sito theta (kanonizacja + wstępny przesiew): kombinacja {i}/{total}..."])
+        else:
+            set_progress([f"Pełny test trwałości ({label}): para {i}/{total}..."])
+
+    set_progress([f"Kanonizuję kolejność A/B i przesiewam do {n_possible} kombinacji tanim testem theta..."])
+    qualifying = compute_theta_qualifying_pairs_two_stage(prices_df, valid_tickers, theta=theta, on_progress=_report_screen_progress)
+    candidate_pairs = qualifying[qualifying["Liczba okien qualif."] >= min_gates]
     if candidate_pairs.empty:
-        msgs = [html.Div(f"Żadna para nie ma co najmniej {min_gates}/3 bramek.", style={"color": THEME["warn"]})] + ([failed_note] if failed_note else [])
+        msgs = [html.Div(f"Żadna para nie kwalifikuje się w co najmniej {min_gates}/3 oknach czasowych (jednostronne p<0.10, t>0).", style={"color": THEME["warn"]})] + ([failed_note] if failed_note else [])
         return html.Div(), empty_fig, empty_fig, empty_fig, html.Div(), html.Div(), html.Div(msgs)
 
-    batch, pooled_alphas = run_monthly_walkforward_batch(prices_df, candidate_pairs, theta=theta, n_months=n_months)
+    # Kointegracja pozostaje dostepna WYLACZNIE informacyjnie -- doklejana do
+    # wyniku ponizej (nie jako kryterium wyboru) dla par ktore juz przeszly
+    # przez wlasciwa bramke theta, tak samo jak w rownaniu pary (Etap 7p).
+    full_scan = scan_universe_diagnostics(_screening_slice(prices_df), tickers=valid_tickers, full_history_df=prices_df)
+    candidate_pairs = candidate_pairs.merge(
+        full_scan[["Ticker A", "Ticker B", "P-Value", "Half-Life", "Hedge Ratio", "Avg Relative Divergence"]],
+        on=["Ticker A", "Ticker B"], how="left"
+    )
+
+    n_candidates = len(candidate_pairs)
+    def _report_batch_progress(i, total):
+        set_progress([f"Backtest theta (mechanizm miesięczny): para {i}/{total}..."])
+    set_progress([f"Uruchamiam pełny backtest theta na {n_candidates} kwalifikujących się parach..."])
+    batch, pooled_alphas = run_monthly_walkforward_batch(prices_df, candidate_pairs, theta=theta, n_months=n_months, on_progress=_report_batch_progress)
     if batch.empty:
         msgs = [html.Div(f"Żadnej parze nie udało się policzyć pełnych {n_months} miesięcy (za mało wspólnej historii).", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
         return html.Div(), empty_fig, empty_fig, empty_fig, html.Div(), html.Div(), html.Div(msgs)
+
+    set_progress(["Renderuję wykresy i tabelę wyników..."])
 
     pooled = compute_pooled_significance(pooled_alphas)
     if pooled["t_stat"] is None:
@@ -906,7 +970,7 @@ def run_theta_batch_attribution(_n_clicks, min_gates, theta, n_months):
             html.Span(f"n = {pooled['n']} obserwacji (pary × miesiące) -- ", style={"color": THEME["text_dim"]}),
             html.Span(f"średnia = {pooled['mean']:+.4f} p.p./miesiąc, ", style={"color": THEME["text_white"]}),
             html.Span(f"t-statystyka = {pooled['t_stat']:+.3f}, ", style={"color": THEME["pos"] if pooled_significant else THEME["text_white"]}),
-            html.Span(f"p-value = {pooled['p_value']:.6f}", style={"color": THEME["pos"] if pooled_significant else THEME["warn"], "fontWeight": "700"}),
+            html.Span(f"p-value (test t, trwałość theta, zbiorczy) = {pooled['p_value']:.6f}", style={"color": THEME["pos"] if pooled_significant else THEME["warn"], "fontWeight": "700"}),
         ])
 
     sector_by_ticker = {c["Ticker"]: c.get("Sector", "") for c in uni.list_companies()}
@@ -937,7 +1001,7 @@ def run_theta_batch_attribution(_n_clicks, min_gates, theta, n_months):
             x=subset["P-Value"], y=subset["Śr. Alpha Miesięczna [pp]"], mode="markers", name=label,
             marker=dict(size=10, color=color, line=dict(width=1, color=THEME["bg_base"])),
             text=[f"{a}/{b}" for a, b in zip(subset["Ticker A"], subset["Ticker B"])],
-            hovertemplate="%{text}<br>p-value=%{x:.4f}<br>Śr. Alpha mies.=%{y:+.3f}pp<extra></extra>",
+            hovertemplate="%{text}<br>p-value kointegracji=%{x:.4f}<br>Śr. Alpha mies.=%{y:+.3f}pp<extra></extra>",
         ))
     scatter_fig.add_vline(x=0.05, line=dict(color=THEME["warn"], dash="dot"), annotation_text="próg p=0.05")
     scatter_fig.add_hline(y=0.0, line=dict(color=THEME["border_strong"], dash="dash"))
@@ -945,7 +1009,7 @@ def run_theta_batch_attribution(_n_clicks, min_gates, theta, n_months):
         template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
         margin=dict(l=50, r=30, t=20, b=40), font_family=THEME["font"],
         legend=dict(orientation="h", y=1.1, font=dict(size=10, color=THEME["text_dim"])),
-        xaxis=dict(title="p-value (skala log)", type="log", showgrid=False, tickfont=dict(color=THEME["text_dim"], size=10)),
+        xaxis=dict(title="p-value kointegracji (skala log, informacyjnie)", type="log", showgrid=False, tickfont=dict(color=THEME["text_dim"], size=10)),
         yaxis=dict(title="Śr. Alpha Miesięczna [p.p.] (mechanizm theta)", showgrid=True, gridcolor=THEME["border"], tickfont=dict(color=THEME["text_dim"], size=10)),
     )
 
@@ -994,7 +1058,6 @@ def run_theta_batch_attribution(_n_clicks, min_gates, theta, n_months):
 
     display_df = batch.copy()
     display_df["Sektor"] = display_df["Same Sector"].map({1: "Ten sam", 0: "Różny"})
-    display_df["Bramki"] = display_df["Gates Passed"].astype(str) + " / 3"
     table = dash_table.DataTable(
         columns=[
             {"name": "Spółka A", "id": "Ticker A"}, {"name": "Spółka B", "id": "Ticker B"},
@@ -1004,10 +1067,10 @@ def run_theta_batch_attribution(_n_clicks, min_gates, theta, n_months):
             {"name": "% Miesięcy > 50/50", "id": "% Miesięcy > 50/50", "type": "numeric", "format": {"specifier": ".1f"}},
             {"name": "Śr. Alpha Mies. [pp]", "id": "Śr. Alpha Miesięczna [pp]", "type": "numeric", "format": {"specifier": "+.3f"}},
             {"name": "Std Alpha Mies. [pp]", "id": "Std Alpha Miesięczna [pp]", "type": "numeric", "format": {"specifier": ".3f"}},
-            {"name": "Bramki", "id": "Bramki"}, {"name": "Sektor", "id": "Sektor"},
-            {"name": "p-value (kointegracja)", "id": "P-Value", "type": "numeric", "format": {"specifier": ".5f"}},
-            {"name": "Half-Life", "id": "Half-Life", "type": "numeric", "format": {"specifier": ".1f"}},
-            {"name": "Hedge Ratio", "id": "Hedge Ratio", "type": "numeric", "format": {"specifier": ".3f"}},
+            {"name": "Okna qualif. (1-3)", "id": "Liczba okien qualif."}, {"name": "Sektor", "id": "Sektor"},
+            {"name": "p-value (kointegracja, informacyjnie)", "id": "P-Value", "type": "numeric", "format": {"specifier": ".5f"}},
+            {"name": "Half-Life (informacyjnie)", "id": "Half-Life", "type": "numeric", "format": {"specifier": ".1f"}},
+            {"name": "Hedge Ratio (informacyjnie)", "id": "Hedge Ratio", "type": "numeric", "format": {"specifier": ".3f"}},
         ],
         data=display_df.to_dict("records"), page_size=25, sort_action="native", filter_action="native",
         style_header=datatable_style_header(), style_data=datatable_style_data(), style_cell=datatable_style_cell(),
@@ -1023,7 +1086,7 @@ def run_theta_batch_attribution(_n_clicks, min_gates, theta, n_months):
     n_significant = int((batch["p-value (t-test)"] < 0.05).sum())
     status = html.Div([
         html.Div(
-            f"Przebacktestowano {len(batch)} par mechanizmem theta (θ={theta}, min. {min_gates}/3 bramek, {n_months} miesięcy) -- "
+            f"Przebacktestowano {len(batch)} par mechanizmem theta (θ={theta}, min. {min_gates}/3 okien qualif., {n_months} miesięcy) -- "
             f"{n_significant} z {len(batch)} par ma statystycznie istotną (p<0.05) miesięczną przewagę. "
             f"Najlepsza wg |t-statystyki|: {batch.iloc[0]['Ticker A']}/{batch.iloc[0]['Ticker B']}.",
             style={"color": THEME["pos"] if n_significant else THEME["text_dim"]}
@@ -1042,15 +1105,17 @@ def run_theta_batch_attribution(_n_clicks, min_gates, theta, n_months):
     Output("relval-wincompare-table", "children"),
     Output("relval-wincompare-status", "children"),
     Input("btn-relval-wincompare-run", "n_clicks"),
-    State("relval-wincompare-min-gates", "value"), State("relval-wincompare-theta", "value"),
+    State("relval-wincompare-theta", "value"),
+    background=True, progress=[Output("relval-wincompare-status", "children", allow_duplicate=True)],
     prevent_initial_call=True,
 )
-def run_window_length_comparison(_n_clicks, min_gates, theta):
+def run_window_length_comparison(set_progress, _n_clicks, theta):
     """
-    Self-contained (fetches 10Y fresh, screens gates on a 5Y slice via
-    _screening_slice -- same consistency fix as the other tabs), matching
-    the established pattern. Runs engine.pairs.compare_window_lengths on
-    the SAME gate-filtered candidate pairs used elsewhere in this module.
+    Self-contained (fetches 10Y fresh). Candidates come from the cheap
+    theta screen alone (`cheap_theta_screen_candidates`) -- no min-windows
+    threshold, deliberately (see comment below on why pre-filtering here
+    would hide exactly the near-miss cases this tab exists to show). Runs
+    engine.pairs.compare_window_lengths on every screen survivor.
     """
     theta = theta or 0.15
 
@@ -1059,19 +1124,31 @@ def run_window_length_comparison(_n_clicks, min_gates, theta):
     if len(tickers) < 2:
         return empty_fig, html.Div(), html.Div("Uniwersum ma mniej niż 2 spółki.", style={"color": THEME["neg"]})
 
+    set_progress([f"Pobieram 10 lat historii cen dla {len(tickers)} spółek..."])
     prices_df, valid_tickers = fetch_universe_prices(tickers, period="10y")
     failed_note = _failed_tickers_note(tickers, valid_tickers)
     if prices_df.empty or len(valid_tickers) < 2:
         msgs = [html.Div("Nie udało się pobrać danych cenowych dla uniwersum.", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
         return empty_fig, html.Div(), html.Div(msgs)
 
-    full_scan = scan_universe_diagnostics(_screening_slice(prices_df), tickers=valid_tickers)
-    candidate_pairs = full_scan[full_scan["Gates Passed"] >= min_gates]
+    # Confirmed (2026-09-08, osiemnasty follow-up): min_gates NIE filtruje juz tutaj --
+    # celem tej zakladki jest wlasnie POROWNANIE 3 wariantow, wiec odsiewanie z gory par
+    # kwalifikujacych sie tylko w 1-2 oknach ucialoby dokladnie te przypadki, ktore ta
+    # zakladka ma pokazac. Jedynym filtrem jest tanie sito theta (kanonizacja + t>0).
+    n_possible = len(valid_tickers) * (len(valid_tickers) - 1) // 2
+    def _report_screen_progress(label, i, total):
+        set_progress([f"Tanie sito theta (kanonizacja): kombinacja {i}/{total}..."])
+    set_progress([f"Przesiewam do {n_possible} kombinacji tanim testem theta..."])
+    candidate_pairs = cheap_theta_screen_candidates(prices_df, valid_tickers, theta=theta, on_progress=_report_screen_progress)
     if candidate_pairs.empty:
-        msgs = [html.Div(f"Żadna para nie ma co najmniej {min_gates}/3 bramek.", style={"color": THEME["warn"]})] + ([failed_note] if failed_note else [])
+        msgs = [html.Div("Żadna para nie przeszła nawet taniego sita theta (t-statystyka <= 0 w obu kierunkach).", style={"color": THEME["warn"]})] + ([failed_note] if failed_note else [])
         return empty_fig, html.Div(), html.Div(msgs)
 
-    detail, summary = compare_window_lengths(prices_df, candidate_pairs, theta=theta)
+    n_candidates = len(candidate_pairs)
+    def _report_compare_progress(variant_label, i, total):
+        set_progress([f"Pełny test ({variant_label}): para {i}/{total}..."])
+    set_progress([f"Uruchamiam pełne porównanie 3 wariantów na {n_candidates} kandydujących parach..."])
+    detail, summary = compare_window_lengths(prices_df, candidate_pairs, theta=theta, on_progress=_report_compare_progress)
     if summary.empty or summary["N Par"].sum() == 0:
         msgs = [html.Div("Żadnej parze nie udało się policzyć żadnego wariantu (za mało wspólnej historii).", style={"color": THEME["neg"]})] + ([failed_note] if failed_note else [])
         return empty_fig, html.Div(), html.Div(msgs)
@@ -1094,7 +1171,7 @@ def run_window_length_comparison(_n_clicks, min_gates, theta):
         columns=[
             {"name": "Wariant", "id": "Wariant"}, {"name": "Spółka A", "id": "Ticker A"}, {"name": "Spółka B", "id": "Ticker B"},
             {"name": "t-statystyka", "id": "t-statystyka", "type": "numeric", "format": {"specifier": "+.3f"}},
-            {"name": "p-value", "id": "p-value (t-test)", "type": "numeric", "format": {"specifier": ".4f"}},
+            {"name": "p-value (trwałość theta)", "id": "p-value (t-test)", "type": "numeric", "format": {"specifier": ".4f"}},
             {"name": "Śr. Alpha [pp]", "id": "Śr. Alpha Miesięczna [pp]", "type": "numeric", "format": {"specifier": "+.3f"}},
             {"name": "Std Alpha [pp]", "id": "Std Alpha Miesięczna [pp]", "type": "numeric", "format": {"specifier": ".3f"}},
             {"name": "N Miesięcy", "id": "N Miesięcy"},

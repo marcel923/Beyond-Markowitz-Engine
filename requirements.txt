@@ -16,3 +16,8 @@ networkx>=3.2  # engine/pairs.py -- max_weight_matching (exact Blossom algorithm
                 # across the whole universe -- NOT a greedy "take the best pair, then the next" heuristic,
                 # which can miss a strictly better combination (see PROJECT_CONTEXT.md for the worked
                 # counter-example that motivated using the exact algorithm instead).
+diskcache>=5.6  # ui/app_instance.py -- backs Dash's DiskcacheManager for background_callback_manager,
+                # letting long-running theta-mechanism callbacks (Tabs 4/5/6, pair-matching panel)
+                # report live text progress instead of a spinner with zero feedback for 10+ minutes.
+multiprocess>=0.70  # required by dash's DiskcacheManager itself (pip install "dash[diskcache]" pulls
+                     # this in too, but pinning it explicitly here avoids relying on that extras syntax)

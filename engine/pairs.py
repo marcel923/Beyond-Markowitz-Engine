@@ -45,7 +45,7 @@ already-fetched price DataFrame (e.g. via data.market_data.fetch_universe_prices
 from __future__ import annotations
 
 import itertools
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import networkx as nx
 import numpy as np
@@ -261,6 +261,8 @@ def scan_universe_diagnostics(
     half_life_max: float = DEFAULT_HALF_LIFE_MAX,
     min_hedge_ratio: float = DEFAULT_MIN_HEDGE_RATIO,
     max_hedge_ratio: float = DEFAULT_MAX_HEDGE_RATIO,
+    full_history_df: Optional[pd.DataFrame] = None,
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> pd.DataFrame:
     """
     Full-universe scan returning EVERY pair with enough overlapping history
@@ -277,6 +279,23 @@ def scan_universe_diagnostics(
     with no early-exit at all now) in exchange for not silently dropping
     pairs on a metric that turned out to have ~zero correlation with actual
     backtest performance.
+
+    `full_history_df`, confirmed addition (2026-09-08, seventeenth
+    follow-up): OPTIONAL. When provided (expected: the SAME tickers'
+    prices over a LONGER window, ~10 years -- e.g. what Tabs 4/5/6 already
+    fetch before calling `_screening_slice` to get the 5-year window this
+    function itself screens on), each pair's (Ticker A, Ticker B) order is
+    canonicalized via `canonicalize_pair_order_by_theta` BEFORE computing
+    diagnostics -- confirmed necessary because P-Value/Half-Life/Hedge
+    Ratio all depend on regression direction (OLS is not symmetric), so
+    the same pair could otherwise show different numbers depending on
+    which tab screened it and in what order `itertools.combinations`
+    happened to produce it. When omitted (the default -- used by Tab 1's
+    own "Skanuj Uniwersum" button and Tab 2, which are NOT changed by this
+    follow-up and only ever fetch 5 years, not enough for the theta-based
+    canonicalization check regardless), behavior is unchanged from before
+    this parameter existed. Real, accepted added cost when supplied: one
+    extra pair of `simulate_monthly_walkforward` calls per candidate pair.
 
     Returns
     -------
@@ -295,15 +314,29 @@ def scan_universe_diagnostics(
     columns = ["Ticker A", "Ticker B", "Gates Passed", "All Passed", "Avg Relative Divergence",
                "P-Value", "Coint Pass", "Half-Life", "Half-Life Pass", "Hedge Ratio", "Hedge Ratio Pass", "Score"]
     rows = []
-    for tA, tB in itertools.combinations(tickers, 2):
+    all_combos = list(itertools.combinations(tickers, 2))
+    total_combos = len(all_combos)
+    for i, (tA, tB) in enumerate(all_combos, start=1):
         if tA not in prices_df.columns or tB not in prices_df.columns:
+            if on_progress is not None:
+                on_progress(i, total_combos)
             continue
         pair_df = prices_df[[tA, tB]].dropna(how="any")
         if len(pair_df) < TRADING_DAYS_2Y + 30:
+            if on_progress is not None:
+                on_progress(i, total_combos)
             continue
+
+        if full_history_df is not None and tA in full_history_df.columns and tB in full_history_df.columns:
+            full_pair_df = full_history_df[[tA, tB]].dropna(how="any")
+            tA, tB, _t_used = canonicalize_pair_order_by_theta(full_pair_df[tA], full_pair_df[tB], tA, tB)
+            pair_df = prices_df[[tA, tB]].dropna(how="any")
+
         pa, pb = pair_df[tA], pair_df[tB]
 
         diag = evaluate_pair_diagnostics(pa, pb, p_value_max, half_life_min, half_life_max, min_hedge_ratio, max_hedge_ratio)
+        if on_progress is not None:
+            on_progress(i, total_combos)
         rows.append({
             "Ticker A": tA, "Ticker B": tB, "Gates Passed": diag["gates_passed"], "All Passed": diag["all_passed"],
             "Avg Relative Divergence": diag["avg_relative_divergence"],
@@ -1088,6 +1121,7 @@ def run_monthly_walkforward_batch(
     theta: float = DEFAULT_THETA, zscore_window: int = DEFAULT_ZSCORE_WINDOW_MONTHLY,
     train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY, n_months: int = DEFAULT_N_MONTHS,
     rebalance_days: int = DEFAULT_REBALANCE_DAYS,
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> Tuple[pd.DataFrame, List[float]]:
     """
     Runs simulate_monthly_walkforward for every pair in `pairs_df`
@@ -1124,18 +1158,31 @@ def run_monthly_walkforward_batch(
     WITHOUT re-running the backtest a second time. Confirmed scope: this
     pools the SAME candidate pairs already selected by the caller's own
     gate-count filter -- not the full universe regardless of gates.
+
+    `on_progress`, confirmed addition (2026-09-08, siedemnasty follow-up):
+    OPTIONAL callback invoked as `on_progress(i, total)` after each pair is
+    processed (1-indexed `i`, `total` = len(pairs_df)) -- lets a Dash
+    background callback report live text progress ("Analizuję parę 47/122")
+    during what was previously a silent, multi-minute wait with no
+    feedback. Purely additive: engine stays UI-agnostic (no Dash imports
+    here), existing callers that don't pass this see no change in behavior.
     """
     rows = []
     pooled_monthly_alphas: List[float] = []
-    for _, row in pairs_df.iterrows():
+    total_pairs = len(pairs_df)
+    for i, (_, row) in enumerate(pairs_df.iterrows(), start=1):
         tA, tB = row["Ticker A"], row["Ticker B"]
         if tA not in prices_df.columns or tB not in prices_df.columns:
+            if on_progress is not None:
+                on_progress(i, total_pairs)
             continue
         pair_df = prices_df[[tA, tB]].dropna(how="any")
         pa, pb = pair_df[tA], pair_df[tB]
 
         result = simulate_monthly_walkforward(pa, pb, theta=theta, zscore_window=zscore_window,
                                                 train_years=train_years, n_months=n_months, rebalance_days=rebalance_days)
+        if on_progress is not None:
+            on_progress(i, total_pairs)
         if result["n_months"] < 2 or result["t_stat"] is None:
             continue
 
@@ -1505,6 +1552,7 @@ def compare_window_lengths(
     prices_df: pd.DataFrame, pairs_df: pd.DataFrame,
     theta: float = DEFAULT_THETA, zscore_window: int = DEFAULT_ZSCORE_WINDOW_MONTHLY,
     train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY,
+    on_progress: Optional[Callable[[str, int, int], None]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Runs run_monthly_walkforward_batch three times over the SAME total test
@@ -1537,9 +1585,11 @@ def compare_window_lengths(
     all_rows = []
     summary_rows = []
     for variant in WINDOW_LENGTH_VARIANTS:
+        variant_progress = (lambda label: (lambda i, total: on_progress(label, i, total)))(variant["label"]) if on_progress is not None else None
         batch, _pooled = run_monthly_walkforward_batch(
             prices_df, pairs_df, theta=theta, zscore_window=zscore_window,
             train_years=train_years, n_months=variant["n_months"], rebalance_days=variant["rebalance_days"],
+            on_progress=variant_progress,
         )
         if batch.empty:
             summary_rows.append({"Wariant": variant["label"], "N Par": 0, "Śr. |t-statystyka|": None, "% Istotnych (p<0.05)": None})
@@ -1579,6 +1629,7 @@ PERSISTENCE_P_ONESIDED_MAX = 0.10  # confirmed 2026-09-08 (raised from an initia
 def compute_persistence_qualifying_pairs(
     prices_df: pd.DataFrame, pairs_df: pd.DataFrame,
     theta: float = DEFAULT_THETA, train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY,
+    on_progress: Optional[Callable[[str, int, int], None]] = None,
 ) -> pd.DataFrame:
     """
     Runs compare_window_lengths (1mo x48, 2mo x24, 3mo x16 -- Etap 7n) for
@@ -1619,7 +1670,7 @@ def compute_persistence_qualifying_pairs(
         the three variants independently qualified -- informational, not
         used as a further filter).
     """
-    detail, _summary = compare_window_lengths(prices_df, pairs_df, theta=theta, train_years=train_years)
+    detail, _summary = compare_window_lengths(prices_df, pairs_df, theta=theta, train_years=train_years, on_progress=on_progress)
     empty_cols = ["Ticker A", "Ticker B", "Best t-statystyka", "Liczba okien qualif."]
     if detail.empty:
         return pd.DataFrame(columns=empty_cols)
@@ -1638,6 +1689,62 @@ def compute_persistence_qualifying_pairs(
         **{"Best t-statystyka": ("t-statystyka", "max"), "Liczba okien qualif.": ("Wariant", "count")}
     )
     return grouped.sort_values("Best t-statystyka", ascending=False).reset_index(drop=True)
+
+
+MATCH_MIN_WINDOWS = 2      # confirmed 2026-09-08, dwudziesty follow-up: para musi kwalifikowac sie
+                            # (jednostronne p<0.10, t>0) w CO NAJMNIEJ 2 z 3 wariantow okien, nie
+                            # tylko 1 -- odpornosc na to, JAK akurat pocieto ten sam okres czasu,
+                            # jest silniejszym dowodem niz pojedynczy dobry wynik z jednego podzialu
+MATCH_MIN_T_STATISTIC = 1.75  # confirmed 2026-09-08: podwyzszony prog (miedzy p<0.05 (~1.645) a
+                                # p<0.01 (~2.33), na zyczenie wlasciciela projektu) na "Best t-statystyka"
+                                # -- SILNIEJSZY pojedynczy dowod niz sam prog kwalifikacji (~1.28 dla
+                                # jednostronnego p<0.10) uzywany do zwyklej widocznosci informacyjnej
+
+
+def filter_pairs_eligible_for_matching(
+    qualifying_pairs_df: pd.DataFrame,
+    min_windows: int = MATCH_MIN_WINDOWS, min_t_statistic: float = MATCH_MIN_T_STATISTIC,
+) -> pd.DataFrame:
+    """
+    Confirmed two-tier design (2026-09-08, dwudziesty follow-up): the
+    project owner correctly noted that `run_maximum_weight_pair_matching`
+    will ALWAYS prefer using more pairs over fewer, since every qualifying
+    edge has positive weight and adding one never decreases the total --
+    this can force a company into a marginal pairing (barely over the
+    Etap 7o qualification bar) it would be better off leaving to
+    clustering instead. This function is the fix: a SEPARATE, stricter
+    quality bar that a pair must ALSO clear before it is even eligible to
+    be considered for the actual matching, distinct from (and applied
+    downstream of) `compute_persistence_qualifying_pairs`'s own
+    qualification bar, which stays as the looser threshold controlling
+    what appears in the informational scan/table/graph.
+
+    A pair must satisfy BOTH conditions to be eligible for matching:
+    - "Liczba okien qualif." >= min_windows (default 2 of 3) -- qualifying
+      in more than one way of slicing the same total test span is a
+      materially stronger signal than a single good result from one
+      particular split, which could have been a favorable accident of
+      exactly where the boundaries happened to fall.
+    - "Best t-statystyka" >= min_t_statistic (default 1.75) -- a materially
+      higher bar than the ~1.28 one-sided-p<0.10 threshold used for mere
+      qualification.
+
+    Pairs that qualify (Etap 7o) but fail this stricter bar are NOT passed
+    to `run_maximum_weight_pair_matching` at all -- their companies remain
+    available for the existing Ward/DTW/RMT clustering, exactly as if they
+    had never qualified in the first place, rather than being forced into
+    a marginal pairing just because the graph edge technically existed.
+
+    Returns
+    -------
+    pd.DataFrame, same columns as `qualifying_pairs_df`, containing only
+    the rows that clear both bars -- ready to pass directly to
+    `run_maximum_weight_pair_matching`.
+    """
+    if qualifying_pairs_df.empty:
+        return qualifying_pairs_df
+    mask = (qualifying_pairs_df["Liczba okien qualif."] >= min_windows) & (qualifying_pairs_df["Best t-statystyka"] >= min_t_statistic)
+    return qualifying_pairs_df[mask].reset_index(drop=True)
 
 
 def run_maximum_weight_pair_matching(qualifying_pairs_df: pd.DataFrame) -> Dict[str, object]:
@@ -1772,3 +1879,127 @@ def canonicalize_pair_order_by_theta(
     if t_yx is None or (t_xy is not None and t_xy >= t_yx):
         return ticker_x, ticker_y, float(t_xy)
     return ticker_y, ticker_x, float(t_yx)
+
+
+# ---------------------------------------------------------------------------
+# Two-Stage Theta Gate (2026-09-08, osiemnasty follow-up) -- confirmed
+# performance compromise for replacing cointegration's min_gates filter
+# with the theta-persistence criterion in Tabs 4/5/6: a cheap single-variant
+# screen first, full three-variant test only on pairs that pass it.
+# ---------------------------------------------------------------------------
+
+CHEAP_SCREEN_T_THRESHOLD = 0.0  # confirmed 2026-09-08: minimal bar (directionally positive
+                                 # only) on the SAME cheap 1x48 run canonicalization already
+                                 # performs -- deliberately generous rather than trying to
+                                 # closely mimic the real p<0.10 threshold, since a pair that's
+                                 # negative even in its best 1x48 direction is a poor candidate
+                                 # for the full three-variant check to rescue.
+
+
+def compute_theta_qualifying_pairs_two_stage(
+    prices_df: pd.DataFrame, tickers: List[str],
+    theta: float = DEFAULT_THETA, train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY,
+    on_progress: Optional[Callable[[str, int, int], None]] = None,
+) -> pd.DataFrame:
+    """
+    Confirmed replacement (2026-09-08, osiemnasty follow-up) for the
+    cointegration-gate-based candidate selection ("Gates Passed >=
+    min_gates") in Tabs 4, 5, 6 -- theta persistence becomes the ONLY
+    qualification criterion there, per the project owner's own confirmed
+    decision (see Etap 7p). Tabs 2 and 3 (discrete 80/20 mechanism) are
+    NOT touched by this function and keep their own cointegration gate.
+
+    Confirmed two-stage design, to avoid paying the full three-variant
+    theta backtest cost on EVERY possible combination in a large universe
+    (with cointegration removed, there is no other cheap pre-filter left):
+
+    STAGE 1 (cheap): for every possible pair of `tickers`, run
+    `canonicalize_pair_order_by_theta` -- this ALREADY performs one 1x48
+    theta backtest in each direction to decide canonical order, so this
+    stage doubles as both the order-canonicalization step (Etap 7p) and a
+    cheap first-pass screen simultaneously, at no extra cost beyond what
+    canonicalization already required. Pairs whose best-direction
+    t-statistic is <= CHEAP_SCREEN_T_THRESHOLD (0.0 -- not even
+    directionally positive) are dropped before Stage 2.
+
+    STAGE 2 (expensive): the surviving, already-canonicalized pairs go
+    through `compute_persistence_qualifying_pairs`'s full three-variant
+    (1mo x48, 2mo x24, 3mo x16) one-sided p<0.10 & t>0 check, exactly as
+    used elsewhere in this module (Etap 7o's matching panel).
+
+    Confirmed, disclosed tradeoff: Stage 1's threshold is deliberately
+    generous (a bare sign check on ONE representative variant) rather than
+    an attempt to closely approximate the real p<0.10 threshold, but it is
+    still a real, accepted risk that a pair whose best 1x48 direction is
+    negative, yet whose 2x24 or 3x16 variant would have been positive and
+    significant, is excluded before ever reaching Stage 2 -- not
+    mathematically ruled out, just judged unlikely enough to accept for
+    the performance this buys back on a large universe scan.
+
+    `on_progress`, confirmed addition matching Etap 7q's pattern: called as
+    on_progress("Etap 1: tanie sito", i, total) during Stage 1, then as
+    on_progress(variant_label, i, total) during Stage 2 (forwarded from
+    compute_persistence_qualifying_pairs -> compare_window_lengths).
+
+    Returns
+    -------
+    pd.DataFrame, same shape as compute_persistence_qualifying_pairs's own
+    output ("Ticker A", "Ticker B", "Best t-statystyka",
+    "Liczba okien qualif."), already canonicalized and already filtered to
+    the final qualifying set -- ready to use exactly where the old
+    `scan_universe_diagnostics(...)["Gates Passed"] >= min_gates" result
+    used to be plugged in.
+    """
+    promising_pairs_df = cheap_theta_screen_candidates(prices_df, tickers, theta=theta, train_years=train_years, on_progress=on_progress)
+    if promising_pairs_df.empty:
+        return pd.DataFrame(columns=["Ticker A", "Ticker B", "Best t-statystyka", "Liczba okien qualif."])
+    return compute_persistence_qualifying_pairs(prices_df, promising_pairs_df, theta=theta, train_years=train_years, on_progress=on_progress)
+
+
+def cheap_theta_screen_candidates(
+    prices_df: pd.DataFrame, tickers: List[str],
+    theta: float = DEFAULT_THETA, train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY,
+    on_progress: Optional[Callable[[str, int, int], None]] = None,
+) -> pd.DataFrame:
+    """
+    Stage 1 alone, extracted as its own reusable function (2026-09-08,
+    osiemnasty follow-up) -- confirmed needed separately from
+    compute_theta_qualifying_pairs_two_stage's combined Stage-1+Stage-2
+    flow, specifically for Tab 6 (`compare_window_lengths`'s own tab):
+    that tab's whole PURPOSE is to run the full three-variant comparison,
+    so calling the combined two-stage function there would redundantly run
+    compare_window_lengths a second time on top of the tab's own call to
+    it. Every possible pair of `tickers` is canonicalized via
+    `canonicalize_pair_order_by_theta` (one cheap 1x48 theta backtest per
+    direction) and kept only if its best-direction t-statistic exceeds
+    CHEAP_SCREEN_T_THRESHOLD (0.0 by default -- see
+    compute_theta_qualifying_pairs_two_stage's docstring for the
+    disclosed tradeoff this implies).
+
+    Returns
+    -------
+    pd.DataFrame with columns "Ticker A", "Ticker B" (already
+    canonicalized) -- ready to feed directly into `compare_window_lengths`
+    or `compute_persistence_qualifying_pairs` as their own `pairs_df`.
+    Empty DataFrame (same columns) if nothing survives the screen.
+    """
+    all_combos = list(itertools.combinations(tickers, 2))
+    total_combos = len(all_combos)
+    promising_rows = []
+    for i, (x, y) in enumerate(all_combos, start=1):
+        if x not in prices_df.columns or y not in prices_df.columns:
+            if on_progress is not None:
+                on_progress("Etap 1: tanie sito", i, total_combos)
+            continue
+        pair_df = prices_df[[x, y]].dropna(how="any")
+        ticker_a, ticker_b, t_used = canonicalize_pair_order_by_theta(pair_df[x], pair_df[y], x, y, theta=theta, train_years=train_years)
+        if on_progress is not None:
+            on_progress("Etap 1: tanie sito", i, total_combos)
+        if t_used > CHEAP_SCREEN_T_THRESHOLD:
+            promising_rows.append({"Ticker A": ticker_a, "Ticker B": ticker_b})
+
+    if not promising_rows:
+        return pd.DataFrame(columns=["Ticker A", "Ticker B"])
+
+    promising_pairs_df = pd.DataFrame(promising_rows)
+    return compute_persistence_qualifying_pairs(prices_df, promising_pairs_df, theta=theta, train_years=train_years, on_progress=on_progress)

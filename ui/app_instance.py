@@ -26,6 +26,19 @@ person to remember to update it.
 """
 import base64
 import dash
+import diskcache
+
+# Confirmed addition (2026-09-08, siedemnasty follow-up): dlugie obliczenia
+# (Zakladki 4/5/6 mechanizmu theta, panel doboru par w Rebalansie) potrafily
+# trwac kilkanascie minut z samym krecacym sie kolkiem, bez zadnej informacji
+# o postepie. DiskcacheManager pozwala oznaczonym callbackom (background=True)
+# okresowo aktualizowac tekstowy status W TRAKCIE trwania obliczen (przez
+# set_progress), zamiast dopiero po ich zakonczeniu -- dostepne w Dash 3.x,
+# nie tylko 4.x, wiec nie koliduje z przypieciem wersji w requirements.txt.
+# Cache trzymany na dysku w osobnym katalogu, nie w pamieci procesu.
+cache = diskcache.Cache("./storage/callback_cache")
+from dash import DiskcacheManager
+background_callback_manager = DiskcacheManager(cache)
 
 dark_css = """
 .Select-control, .Select, .Select-multi-value-wrapper {
@@ -81,7 +94,8 @@ dark_css = """
 encoded_css = base64.b64encode(dark_css.encode('utf-8')).decode('utf-8')
 external_stylesheets = [f"data:text/css;base64,{encoded_css}"]
 
-app = dash.Dash(__name__, title="Premium Quant Dashboard", external_stylesheets=external_stylesheets, suppress_callback_exceptions=True)
+app = dash.Dash(__name__, title="Premium Quant Dashboard", external_stylesheets=external_stylesheets,
+                 suppress_callback_exceptions=True, background_callback_manager=background_callback_manager)
 
 # Naprawa "białego kontrastu" w komponencie dcc.Dropdown w Tab 5 (Forward Tracker):
 # react-select (silnik pod spodem) domyślnie renderuje kontrolkę i menu na jasnym tle,

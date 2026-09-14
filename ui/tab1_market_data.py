@@ -38,7 +38,7 @@ from engine.clustering import (
     compute_semicovariance_matrix, semicov_to_semicorr, rmt_denoise_correlation,
     compute_elbow_eps, dtw_distance, compute_dtw_distance_matrix, kmedoids,
 )
-from engine.pairs import compute_persistence_qualifying_pairs, run_maximum_weight_pair_matching, canonicalize_pair_order_by_theta
+from engine.pairs import compute_persistence_qualifying_pairs, run_maximum_weight_pair_matching, canonicalize_pair_order_by_theta, compute_theta_qualifying_pairs_two_stage, filter_pairs_eligible_for_matching, MATCH_MIN_WINDOWS, MATCH_MIN_T_STATISTIC
 
 def build_dendrogram_figure(Z, active_tickers, ticker_to_cluster):
     dendro_data = dendrogram(Z, labels=active_tickers, no_plot=True)
@@ -683,9 +683,10 @@ def _circular_layout(nodes):
     Output("pairmatch-status", "children"),
     Input("btn-pairmatch-run", "n_clicks"),
     State("store-raw-close", "data"), State("pairmatch-theta", "value"),
+    background=True, progress=[Output("pairmatch-status", "children", allow_duplicate=True)],
     prevent_initial_call=True,
 )
-def run_pair_matching_analysis(_n_clicks, raw_close_data, theta):
+def run_pair_matching_analysis(set_progress, _n_clicks, raw_close_data, theta):
     """
     Confirmed fix (2026-09-08, sixteenth follow-up): re-fetches 10 years of
     price data independently, rather than reusing `store-raw-close` (Stage
@@ -712,6 +713,7 @@ def run_pair_matching_analysis(_n_clicks, raw_close_data, theta):
     if len(selected_tickers) < 2:
         return empty_fig, empty_fig, html.Div(), html.Div("Za mało spółek zaznaczonych do analizy par.", style={"color": THEME["neg"]})
 
+    set_progress([f"Pobieram niezależnie 10 lat historii cen dla {len(selected_tickers)} spółek..."])
     prices_df, all_tickers = fetch_universe_prices(selected_tickers, period="10y")
     if prices_df.empty or len(all_tickers) < 2:
         return empty_fig, empty_fig, html.Div(), html.Div(
@@ -719,39 +721,60 @@ def run_pair_matching_analysis(_n_clicks, raw_close_data, theta):
             style={"color": THEME["neg"]}
         )
 
-    canonical_pairs = []
-    for x, y in itertools.combinations(all_tickers, 2):
-        ticker_a, ticker_b, _t_used = canonicalize_pair_order_by_theta(
-            prices_df[x].dropna(), prices_df[y].dropna(), x, y, theta=theta
-        )
-        canonical_pairs.append({"Ticker A": ticker_a, "Ticker B": ticker_b})
-    pairs_df = pd.DataFrame(canonical_pairs)
-
-    qualifying = compute_persistence_qualifying_pairs(prices_df, pairs_df, theta=theta)
+    # Confirmed fix (2026-09-08, osiemnasty follow-up): poprzednia wersja robila
+    # kanonizacje RECZNIE dla kazdej kombinacji, a potem pelny 3-wariantowy test
+    # NA WSZYSTKICH kombinacjach bez zadnego taniego sita -- dokladnie ten drogi
+    # przypadek, ktory dwuetapowy kompromis (Etap 7q) mial wyeliminowac. Teraz
+    # korzysta z tej samej, wspolnej funkcji co Zakladki 4/5.
+    n_possible = len(all_tickers) * (len(all_tickers) - 1) // 2
+    def _report_screen_progress(label, i, total):
+        if label == "Etap 1: tanie sito":
+            set_progress([f"Tanie sito theta (kanonizacja): kombinacja {i}/{total}..."])
+        else:
+            set_progress([f"Pełny test trwałości ({label}): para {i}/{total}..."])
+    set_progress([f"Kanonizuję i przesiewam do {n_possible} kombinacji tanim testem theta..."])
+    qualifying = compute_theta_qualifying_pairs_two_stage(prices_df, all_tickers, theta=theta, on_progress=_report_screen_progress)
     if qualifying.empty:
         msg = html.Div("Żadna para nie spełnia progu (jednostronne p<0.10, t-statystyka>0) w żadnym z 3 okien.", style={"color": THEME["warn"]})
         return empty_fig, empty_fig, html.Div(), msg
 
-    result = run_maximum_weight_pair_matching(qualifying)
-    G = result["graph"]
+    set_progress([f"Filtruję do par dopuszczalnych do skojarzenia (min. {MATCH_MIN_WINDOWS}/3 okna, t-statystyka≥{MATCH_MIN_T_STATISTIC})..."])
+    eligible = filter_pairs_eligible_for_matching(qualifying)
+    set_progress(["Uruchamiam optymalne skojarzenie (Maximum Weight Matching)..."])
+    result = run_maximum_weight_pair_matching(eligible)
     matched_pairs = result["matched_pairs"]
     matched_edge_set = {(a, b) for a, b, _w in matched_pairs}
     matched_tickers = {t for pair in matched_edge_set for t in pair}
-    graph_nodes = list(G.nodes())
+    eligible_edge_set = {(row["Ticker A"], row["Ticker B"]) for _, row in eligible.iterrows()}
+    all_qualifying_edges = [(row["Ticker A"], row["Ticker B"], row["Best t-statystyka"]) for _, row in qualifying.iterrows()]
+    graph_nodes = sorted({t for a, b, _w in all_qualifying_edges for t in (a, b)})
     never_qualified = sorted(set(all_tickers) - set(graph_nodes))
     unmatched_all = sorted(set(all_tickers) - matched_tickers)
+
+    def _edge_tier(a, b):
+        if (a, b) in matched_edge_set or (b, a) in matched_edge_set:
+            return "selected"
+        if (a, b) in eligible_edge_set or (b, a) in eligible_edge_set:
+            return "eligible"
+        return "qualifies_only"
+
+    TIER_STYLE = {
+        "selected": dict(color=THEME["pos"], width=4, dash="solid"),
+        "eligible": dict(color=THEME["border_strong"], width=1.5, dash="dot"),
+        "qualifies_only": dict(color=THEME["border"], width=0.75, dash="dot"),
+    }
 
     # --- Wykres 1: siec grafow (uklad kolowy) ---
     positions = _circular_layout(graph_nodes)
     net_fig = go.Figure()
-    for a, b, w in G.edges(data="weight"):
-        is_matched = (a, b) in matched_edge_set or (b, a) in matched_edge_set
+    for a, b, w in all_qualifying_edges:
+        tier = _edge_tier(a, b)
+        style = TIER_STYLE[tier]
         x0, y0 = positions[a]; x1, y1 = positions[b]
         net_fig.add_trace(go.Scatter(
             x=[x0, x1], y=[y0, y1], mode="lines",
-            line=dict(color=THEME["pos"] if is_matched else THEME["border_strong"], width=4 if is_matched else 1,
-                      dash="solid" if is_matched else "dot"),
-            hoverinfo="text", text=f"{a}/{b}: t={w:.3f}", showlegend=False,
+            line=dict(color=style["color"], width=style["width"], dash=style["dash"]),
+            hoverinfo="text", text=f"{a}/{b}: t={w:.3f} ({tier})", showlegend=False,
         ))
     node_x = [positions[n][0] for n in graph_nodes]
     node_y = [positions[n][1] for n in graph_nodes]
@@ -771,7 +794,7 @@ def run_pair_matching_analysis(_n_clicks, raw_close_data, theta):
     matrix_tickers = graph_nodes
     z = np.full((len(matrix_tickers), len(matrix_tickers)), np.nan)
     idx = {t: i for i, t in enumerate(matrix_tickers)}
-    for a, b, w in G.edges(data="weight"):
+    for a, b, w in all_qualifying_edges:
         z[idx[a]][idx[b]] = w
         z[idx[b]][idx[a]] = w
     matrix_fig = go.Figure(data=go.Heatmap(
@@ -790,9 +813,14 @@ def run_pair_matching_analysis(_n_clicks, raw_close_data, theta):
 
     # --- Tabela podsumowania ---
     rows = [{"Spółka A": a, "Spółka B": b, "t-statystyka": round(w, 3), "Status": "Wybrana para"} for a, b, w in matched_pairs]
-    for t in unmatched_all:
-        reason = "brak jakiejkolwiek kwalifikującej się pary" if t in never_qualified else "przegrana w konkurencji o skojarzenie"
-        rows.append({"Spółka A": t, "Spółka B": "—", "t-statystyka": None, "Status": f"Bez pary ({reason}) → klastrowanie"})
+    for a, b, w in all_qualifying_edges:
+        if _edge_tier(a, b) == "eligible":
+            rows.append({"Spółka A": a, "Spółka B": b, "t-statystyka": round(w, 3), "Status": "Dopuszczalna, ale przegrana w konkurencji o skojarzenie"})
+        elif _edge_tier(a, b) == "qualifies_only":
+            rows.append({"Spółka A": a, "Spółka B": b, "t-statystyka": round(w, 3),
+                         "Status": f"Kwalifikuje się, ale poniżej progu jakości (min. {MATCH_MIN_WINDOWS}/3 okna, t≥{MATCH_MIN_T_STATISTIC})"})
+    for t in never_qualified:
+        rows.append({"Spółka A": t, "Spółka B": "—", "t-statystyka": None, "Status": "Bez pary (brak jakiejkolwiek kwalifikującej się pary) → klastrowanie"})
     table = dash_table.DataTable(
         columns=[{"name": c, "id": c} for c in ["Spółka A", "Spółka B", "t-statystyka", "Status"]],
         data=rows, page_size=20, sort_action="native",
@@ -805,7 +833,8 @@ def run_pair_matching_analysis(_n_clicks, raw_close_data, theta):
 
     status = html.Div(
         f"{len(all_tickers)} spółek przeanalizowanych -- {len(qualifying)} par kwalifikujących się, "
-        f"{len(matched_pairs)} wybranych do skojarzenia, {len(unmatched_all)} bez pary (idą do klastrowania).",
+        f"{len(eligible)} dopuszczalnych do skojarzenia (min. {MATCH_MIN_WINDOWS}/3 okna, t≥{MATCH_MIN_T_STATISTIC}), "
+        f"{len(matched_pairs)} faktycznie wybranych, {len(unmatched_all)} bez pary (idą do klastrowania).",
         style={"color": THEME["pos"]}
     )
     return net_fig, matrix_fig, table, status

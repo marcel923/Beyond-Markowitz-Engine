@@ -17,6 +17,7 @@ import dash
 from datetime import date
 from dash import dcc, html, dash_table
 from dash.dependencies import Input, Output, State
+from engine.pairs import MATCH_MIN_WINDOWS, MATCH_MIN_T_STATISTIC
 
 from ui.app_instance import app
 from ui.theme import THEME, TAB_STYLE, TAB_SELECTED_STYLE, TABS_CONTAINER_STYLE
@@ -453,11 +454,15 @@ app.layout = html.Div(style={
                             "Stage 1 -- mechanizm theta potrzebuje więcej historii, żeby 48-miesięczny wariant miał pełne 5-letnie okno "
                             "treningowe w każdym miesiącu), dlatego może to potrwać dłużej niż inne operacje na tej karcie. Dla każdej "
                             "pary kolejność spółek (którą traktować jako \"A\") jest automatycznie ustalana na kierunek dający wyższą "
-                            "t-statystykę -- regresja nie jest symetryczna, więc kolejność realnie wpływa na wynik. Sprawdza, które pary "
-                            "utrzymują statystycznie istotną (jednostronne p<0.10, t-statystyka > 0) dodatnią przewagę mechanizmu theta w "
-                            "co najmniej jednym z trzech okien czasowych (1×48, 2×24, 3×16 miesięcy). Spośród kwalifikujących się par "
-                            "wybiera zestaw, w którym KAŻDA spółka trafia do co najwyżej jednej pary, maksymalizując łączną sumę "
-                            "t-statystyk (dokładny algorytm Edmondsa, nie zachłanny wybór). Spółki bez pary wracają do zwykłego "
+                            "t-statystykę -- regresja nie jest symetryczna, więc kolejność realnie wpływa na wynik. Dwa progi, nie jeden: "
+                            "para KWALIFIKUJE SIĘ przy jednostronnym p<0.10 (t-statystyka > 0) w co najmniej jednym z trzech okien "
+                            "czasowych (1×48, 2×24, 3×16 miesięcy) -- ale żeby była DOPUSZCZALNA do faktycznego skojarzenia, musi dodatkowo "
+                            f"kwalifikować się w co najmniej {MATCH_MIN_WINDOWS}/3 oknach ORAZ mieć t-statystykę ≥{MATCH_MIN_T_STATISTIC} -- "
+                            "bo algorytm skojarzenia zawsze woli dołożyć jeszcze jedną parę (każda dodatnia waga podnosi sumę), więc bez "
+                            "tego drugiego progu wyciągałby spółki z klastrowania do coraz słabszych par tylko dlatego, że jakiś partner "
+                            "formalnie istniał. Spośród DOPUSZCZALNYCH par wybiera zestaw, w którym KAŻDA spółka trafia do co najwyżej "
+                            "jednej pary, maksymalizując łączną sumę t-statystyk (dokładny algorytm Edmondsa, nie zachłanny wybór). Spółki "
+                            "bez pary (albo tylko formalnie kwalifikujące się, ale poniżej drugiego progu) wracają do zwykłego "
                             "klastrowania powyżej. Wynik NIE wpływa jeszcze na wagi w Rebalansie.",
                             style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
                         ),
@@ -674,10 +679,14 @@ app.layout = html.Div(style={
                         html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
                             html.Div(
                                 "Skanuje CAŁE uniwersum spółek (niezależnie od tego, co zaznaczone w Rebalance na bieżący cykl) pod kątem par "
-                                "o statystycznie potwierdzonej kointegracji (Engle-Granger). Tabela pokazuje WSZYSTKIE pary, które przeszły "
-                                "próg dryfu 2Y -- łącznie z tymi, które nie przeszły wszystkich 4 bramek (kolumna \"Bramki\"), żeby było widać "
-                                "pary blisko kwalifikacji. Wynik jest czysto diagnostyczny -- nie wpływa jeszcze na wagi w Rebalance. "
-                                "Przy większym uniwersum (100+ spółek) skanowanie może potrwać kilka minut.",
+                                "o statystycznie potwierdzonej kointegracji (Engle-Granger) -- WYŁĄCZNIE informacyjnie, nie jako kryterium "
+                                "kwalifikacji dla mechanizmu theta (patrz Zakładki 4/5/6, które używają innego, potwierdzonego kryterium: "
+                                "trwałości mechanizmu theta). Tabela pokazuje WSZYSTKIE pary z wystarczająco długą wspólną historią -- łącznie "
+                                "z tymi, które nie przeszły wszystkich 3 bramek (kolumna \"Bramki\"), żeby było widać pary blisko kwalifikacji. "
+                                "Kolejność spółek (która jest \"A\") jest kanonizowana tym samym kryterium co wszędzie indziej w tym module, "
+                                "więc ta sama para pokaże te same liczby niezależnie od tego, gdzie w module ją sprawdzisz. Wynik jest czysto "
+                                "diagnostyczny -- nie wpływa jeszcze na wagi w Rebalance. Przy większym uniwersum (100+ spółek) skanowanie "
+                                "może potrwać kilka minut.",
                                 style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
                             ),
                             html.Button("SKANUJ UNIWERSUM", id="btn-relval-scan", n_clicks=0, style={
@@ -885,15 +894,17 @@ app.layout = html.Div(style={
                                 "Raz na 21 sesji sprawdzamy Z-score (hedge ratio i bazowe okno 252 sesji, wyestymowane WYŁĄCZNIE z 5 lat "
                                 "poprzedzających ten miesiąc), płynnie przechylamy wagę wzorem 0.5 + 0.5·θ·tanh(-Z), trzymamy bez zmian przez "
                                 "cały miesiąc. Wykres: oś X = Composite Score in-sample (5-letni trening, metoda progowa z zakładki OOS), "
-                                "oś Y = średni Score z ostatnich 12 miesięcy metodą theta (ranking względem innych par w KAŻDYM miesiącu "
+                                "oś Y = średni Score z ostatnich N miesięcy metodą theta (ranking względem innych par w KAŻDYM miesiącu "
                                 "osobno), słupki błędu = odchylenie standardowe tego miesięcznego Score. Szukaj par w prawym górnym rogu, "
-                                "z KRÓTKIMI słupkami błędu -- wysoki i stabilny wynik w obu oknach czasowych. p-value nie jest tu nigdzie "
-                                "używane. Wymaga wcześniejszego skanu w pierwszej zakładce.",
+                                "z KRÓTKIMI słupkami błędu -- wysoki i stabilny wynik w obu oknach czasowych. Kandydatów wybiera dwuetapowy "
+                                "test trwałości mechanizmu theta (jednostronne p<0.10, t-statystyka>0) -- kointegracja nie jest tu w ogóle "
+                                "używana, nawet informacyjnie. Samodzielnie pobiera dane -- nie wymaga wcześniejszego skanu w pierwszej "
+                                "zakładce.",
                                 style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
                             ),
                             html.Div(style={"display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap"}, children=[
                                 html.Div(style={"minWidth": "180px"}, children=[
-                                    html.Div("MINIMALNA LICZBA BRAMEK", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    html.Div("MIN. LICZBA OKIEN QUALIFIKUJĄCYCH (trwałość theta)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
                                     dcc.Dropdown(id="relval-monthly-min-gates", clearable=False, value=1, options=[
                                         {"label": f"{n} / 3 lub więcej", "value": n} for n in [1, 2, 3]
                                     ]),
@@ -944,16 +955,17 @@ app.layout = html.Div(style={
                             html.Div(
                                 "To samo co \"Analiza Wsteczna (Batch)\" w zakładce 2, ale zamiast dynamicznej alokacji progowej (80/20 na "
                                 "przecięciu Z-score) używa mechanizmu theta: raz na 21 sesji płynne przechylenie wagi 0.5 + 0.5·θ·tanh(-Z), "
-                                "trzymane bez zmian przez cały miesiąc. Dla KAŻDEJ pary z ostatniego skanu liczy średnią miesięczną Alpha przez "
-                                "12 miesięcy oraz t-statystykę (czy ta przewaga jest statystycznie odróżnialna od zera). Korelacje pokazują, "
-                                "które zmienne (p-value, half-life, hedge ratio, rozbieżność ścieżek, ten sam sektor) faktycznie tłumaczą "
-                                "skuteczność TEGO KONKRETNEGO mechanizmu -- niezależnie od tego, co tłumaczyło skuteczność mechanizmu progowego "
-                                "w zakładce 2. Wymaga wcześniejszego skanu w pierwszej zakładce.",
+                                "trzymane bez zmian przez cały miesiąc. Jedynym kryterium kwalifikacji pary jest trwałość TEGO mechanizmu "
+                                "(jednostronne p<0.10, t-statystyka>0, w co najmniej tylu z 3 okien czasowych, ile wybrano niżej) -- kointegracja "
+                                "jest tu wyłącznie informacyjna. Korelacje pokazują, które zmienne (kointegracja, half-life, hedge ratio, "
+                                "rozbieżność ścieżek, ten sam sektor) faktycznie tłumaczą skuteczność TEGO KONKRETNEGO mechanizmu -- niezależnie "
+                                "od tego, co tłumaczyło skuteczność mechanizmu progowego w zakładce 2. Samodzielnie pobiera dane i przesiewa "
+                                "całe uniwersum -- nie wymaga wcześniejszego skanu w pierwszej zakładce.",
                                 style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
                             ),
                             html.Div(style={"display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap"}, children=[
                                 html.Div(style={"minWidth": "180px"}, children=[
-                                    html.Div("MINIMALNA LICZBA BRAMEK", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    html.Div("MIN. LICZBA OKIEN QUALIFIKUJĄCYCH (trwałość theta)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
                                     dcc.Dropdown(id="relval-thetabatch-min-gates", clearable=False, value=1, options=[
                                         {"label": f"{n} / 3 lub więcej", "value": n} for n in [1, 2, 3]
                                     ]),
@@ -998,7 +1010,7 @@ app.layout = html.Div(style={
                             ]),
                         ]),
                         html.Div(style={"padding": "18px 20px", "borderBottom": f"1px solid {THEME['border']}"}, children=[
-                            html.Div("p-value vs ŚREDNIA ALPHA MIESIĘCZNA (mechanizm theta)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
+                            html.Div("p-value KOINTEGRACJI (informacyjnie) vs ŚREDNIA ALPHA MIESIĘCZNA (mechanizm theta)", style={"fontSize": "11px", "color": THEME["text_label"], "fontWeight": "600", "marginBottom": "12px"}),
                             dcc.Loading(type="circle", color=THEME["accent"], children=[
                                 dcc.Graph(id="relval-thetabatch-scatter", config={"displayModeBar": False}, style={"height": "420px"}),
                             ]),
@@ -1061,16 +1073,12 @@ app.layout = html.Div(style={
                                 "ale każda z nich mierzy krótszy kawałek czasu; dłuższe okresy dają mniej próbek, ale każda uśrednia dłuższy "
                                 "fragment. To nie jest oczywiste z góry, która strona wygrywa -- każdy wariant liczony jest tym samym, już "
                                 "poprawionym mechanizmem (precyzyjny pomiar dzienny w obrębie każdego okresu, nie tylko dwa punkty końcowe). "
-                                "Wymaga wcześniejszego skanu w pierwszej zakładce.",
+                                "Kandydatów wybiera tanie sito theta (kanonizacja kierunku + wstępny przesiew) -- celowo BEZ progu liczby okien, "
+                                "żeby pokazać też pary kwalifikujące się tylko w 1-2 z 3 wariantów, nie tylko te najbardziej oczywiste. "
+                                "Samodzielnie pobiera dane -- nie wymaga wcześniejszego skanu w pierwszej zakładce.",
                                 style={"fontSize": "12px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "16px"}
                             ),
                             html.Div(style={"display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap"}, children=[
-                                html.Div(style={"minWidth": "180px"}, children=[
-                                    html.Div("MINIMALNA LICZBA BRAMEK", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
-                                    dcc.Dropdown(id="relval-wincompare-min-gates", clearable=False, value=1, options=[
-                                        {"label": f"{n} / 3 lub więcej", "value": n} for n in [1, 2, 3]
-                                    ]),
-                                ]),
                                 html.Div(style={"minWidth": "140px"}, children=[
                                     html.Div("THETA (siła nudge)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
                                     dcc.Input(id="relval-wincompare-theta", type="number", value=0.15, min=0.05, max=0.6, step=0.05, style={

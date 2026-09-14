@@ -2603,6 +2603,360 @@ same count, modified existing callbacks), solver regression rerun
 
 ---
 
+### 7q. Scanner Canonicalization + Live Progress Reporting for Long-Running Callbacks (partial, confirmed scope)
+
+Confirmed follow-up (2026-09-08, seventeenth follow-up), continuing Etap
+7p. Two confirmed decisions from the project owner before implementing:
+(1) canonicalize `scan_universe_diagnostics` too, accepting that this
+changes DISPLAYED cointegration numbers (P-Value/Half-Life/Hedge Ratio)
+for pairs where direction matters -- corrected the project owner's own
+initial assumption that this would be purely cosmetic (column display
+order only); (2) Tabs 2 and 3 (the discrete 80/20-mechanism tabs) keep
+their own cointegration gate unchanged -- unification to the theta-
+persistence criterion applies only where the theta mechanism itself is
+being screened or evaluated (the scanner, Tabs 4/5/6, the Rebalance-tab
+matching panel).
+
+**Scanner canonicalization**: `scan_universe_diagnostics` gained an
+OPTIONAL `full_history_df` parameter. When supplied (a longer, ~10-year
+price history for the same tickers), each pair is run through
+`canonicalize_pair_order_by_theta` BEFORE its cointegration diagnostics
+are computed, using the SAME theta-persistence criterion as everywhere
+else in this module (not cointegration itself -- confirmed 2026-09-08,
+same follow-up: order choice should track the criterion that actually
+matters, not the one being demoted to purely informational). When omitted
+(the default), behavior is unchanged -- used by Tab 1's own "Skanuj
+Uniwersum" button and Tab 2, neither of which fetch enough history (only
+5 years) for the theta-based check regardless, and neither of which is
+being altered by this follow-up. Wired into the 3 callers that already
+fetch 10 years (Tabs 4, 5, 6's `_screening_slice`-based candidate
+selection) -- Tab 3's own `scan_universe_diagnostics` call (6-year fetch,
+discrete mechanism) deliberately left untouched.
+
+Verified directly with a constructed scenario where the natural
+`itertools.combinations` order (driven by dict/column insertion order)
+disagreed with the theta-optimal direction: without `full_history_df`,
+the scan reported (NOISY, CLEAN) with P-Value=1.01e-07, Half-Life=9.9;
+with it supplied, the scan correctly flipped to (CLEAN, NOISY) with
+P-Value=2.96e-07, Half-Life=10.6 -- concretely demonstrating both that
+the fix changes real displayed numbers (not just column layout) and that
+it correctly tracks the higher-t-statistic direction.
+
+**Second, independently-raised problem, same follow-up**: running
+several Tab 4/5/6 analyses back-to-back took roughly 15 minutes with only
+a spinner and zero progress feedback -- confirmed as a real, separate
+usability problem worth fixing regardless of the min_gates/theta-gate
+question still pending (see below). **Infrastructure built**: Dash's
+`background=True` callback mechanism, backed by `DiskcacheManager`
+(`ui/app_instance.py` -- `diskcache` and `multiprocess` added to
+`requirements.txt`; the latter is `DiskcacheManager`'s own runtime
+dependency, not obvious from the package name, discovered only when the
+app failed to import after adding the manager). Confirmed available in
+Dash 3.x (predates the 4.x rewrite the project is deliberately avoiding),
+so this does not conflict with the `dash<4.0` pin.
+
+**Engine-level plumbing, confirmed additive and UI-agnostic**: an optional
+`on_progress` callback parameter was threaded through the THREE layers a
+Tab 5 run actually calls -- `run_monthly_walkforward_batch` (innermost,
+calls `on_progress(i, total)` after each pair) -> `compare_window_lengths`
+(wraps it per-variant, calling `on_progress(variant_label, i, total)`) ->
+`compute_persistence_qualifying_pairs` (passes it straight through). None
+of these engine functions import Dash or know anything about callbacks --
+existing callers that don't pass `on_progress` see no behavior change,
+verified directly (a 4-pair test confirmed exactly `[(1,4),(2,4),(3,4),(4,4)]`
+progress calls; a 3-pair/3-variant test through all three layers confirmed
+exactly 9 calls in the correct variant-labeled order).
+
+**Wired into Tab 5 (`run_theta_batch_attribution`) as the first
+end-to-end proof of concept**: `background=True`, a `progress=[Output(
+"relval-thetabatch-status", "children", allow_duplicate=True)]` reusing
+the SAME status element as the callback's own final Output (confirmed
+this dual role is valid in Dash -- interim `set_progress` updates show
+live text, the function's own return value becomes the final message once
+it completes; `allow_duplicate=True` was required and resolved a
+duplicate-output registration error caught immediately when the app tried
+to import). `set_progress` is now the callback's first positional
+argument (Dash's convention when `progress` is specified). Verified
+end-to-end on a synthetic 8-ticker/22-qualifying-pair scenario by calling
+the function directly with a fake `set_progress` collector: 27 progress
+messages were generated, in the correct order, from
+"Wczytuję listę spółek..." through per-pair "para 1/22" ... "para 22/22"
+to the final rendering step -- concretely confirming what the project
+owner will actually see change on screen during a long run, rather than
+the button appearing to hang.
+
+**Explicitly NOT yet done, confirmed scope for a following turn**:
+- The SAME `background=True` + progress-reporting treatment has not yet
+  been applied to Tab 4 (`run_monthly_persistence_test`), Tab 6
+  (`run_window_length_comparison`), or the Rebalance-tab pair-matching
+  panel (`run_pair_matching_analysis`) -- all three call the same
+  progress-capable engine functions, so extending the pattern should be
+  mechanical, but has not been done or tested yet.
+- The confirmed two-stage performance compromise for replacing Tabs
+  4/5/6's cointegration-gate min_gates filter with a theta-persistence
+  gate (cheap single-variant theta screen first, full three-variant test
+  only on pairs that pass it -- confirmed 2026-09-08, same follow-up, to
+  avoid paying the full theta-backtest cost on every possible combination
+  in a large universe with no cheap pre-filter at all) has NOT been
+  implemented yet. Tabs 4/5/6 still filter candidate pairs by cointegration
+  `Gates Passed >= min_gates` as before this follow-up.
+- A separately-raised, explicitly deferred calibration idea (not yet
+  designed or scheduled): today's Maximum Weight Matching algorithm
+  (Etap 7o) will always prefer using MORE pairs over fewer, since every
+  qualifying edge has positive weight and adding one never decreases the
+  total -- the project owner correctly noted this can force a company into
+  a marginal pairing it would be better off leaving to clustering instead,
+  and wants a separate quality threshold for "is this pairing worth pulling
+  companies out of clustering for" on top of the existing bare qualification
+  test -- explicitly filed as a future calibration step, not started.
+
+Full app integration recheck after this partial pass (60/60 callbacks --
+same count so far), solver regression rerun (identical weights to every
+prior check in this project's history).
+
+---
+
+### 7r. Reloader Fix, Two-Stage Theta Gate Rollout, Progress Reporting Everywhere (complete)
+
+Confirmed follow-up (2026-09-08, still eighteenth follow-up) completing
+Etap 7q: the project owner reported running Tabs 1, 5, 6 and seeing NO
+progress indication anywhere, including Tab 5 where Etap 7q's proof of
+concept was supposedly already wired and tested.
+
+**Root cause, found and fixed**: `app.py` ran with `app.run(debug=True,
+port=8050)`. `debug=True` enables Werkzeug's auto-reloader by default,
+which spawns a SEPARATE monitor process on top of the actual app process
+-- a documented source of `DiskcacheManager` failures, since the
+background-callback multiprocessing worker can end up talking to the
+wrong process, so `set_progress` updates (and sometimes the whole
+background task) never reach the browser, with no error surfaced
+anywhere. Fixed: `app.run(debug=True, use_reloader=False, port=8050)`
+-- `debug=True` itself (error pages, callback exception detail) is kept;
+only the reloader is disabled. The person restarts the server manually
+after code edits while this is off, since it no longer auto-restarts.
+
+**Two-stage theta gate, completed and rolled out to all four places
+identified in Etap 7q as still pending**:
+- New engine function `compute_theta_qualifying_pairs_two_stage`
+  (Stage 1: cheap canonicalization-based screen via
+  `canonicalize_pair_order_by_theta`, keeping only pairs whose
+  best-direction t-statistic exceeds `CHEAP_SCREEN_T_THRESHOLD` (0.0) --
+  Stage 2: the full three-variant `compute_persistence_qualifying_pairs`
+  check, run only on Stage-1 survivors).
+- Verified this two-stage result EXACTLY matches a fair, non-shortcut
+  comparison (canonicalize every possible combination first, then run
+  the full three-variant check on all of them with no cheap-screen
+  exclusion) on a 7-ticker test universe: 34 qualifying pairs in both
+  cases, identical sets -- confirming the cheap screen did not wrongly
+  exclude any true qualifier on this test. (An earlier, naive comparison
+  attempt without first canonicalizing the "full" side gave a false
+  mismatch -- caught and corrected before trusting the result, since that
+  comparison wasn't apples-to-apples.)
+- Stage 1 was further extracted into its own standalone
+  `cheap_theta_screen_candidates` function, confirmed necessary
+  specifically for Tab 6: that tab's own purpose IS running the full
+  three-variant `compare_window_lengths` comparison, so calling the
+  combined two-stage function there would redundantly re-run it a second
+  time. Tab 6 now uses the cheap screen alone as its sole candidate
+  pre-filter -- its own `min_gates` dropdown was retired from filtering
+  entirely for this tab specifically (confirmed reasoning: pre-filtering
+  by "qualifies in >= N windows" before the comparison that answers
+  exactly that question would hide the very near-miss cases -- pairs
+  qualifying in only 1 or 2 of 3 windows -- that the tab exists to show).
+  Tabs 4 and 5, and the Rebalance-tab matching panel, use the combined
+  two-stage function directly and keep their `min_gates`-equivalent
+  dropdown, now filtering on "Liczba okien qualif." (how many of the 3
+  window variants each pair qualified in) instead of cointegration gate
+  count -- same UI control, same 1/2/3 options, new underlying meaning,
+  confirmed and applied consistently.
+- The Rebalance-tab matching panel (Etap 7o/7p) had NOT been using the
+  cheap screen at all -- it manually canonicalized every possible
+  combination and then ran the full three-variant check on ALL of them
+  unconditionally, exactly the expensive case the two-stage compromise
+  was meant to eliminate. Fixed to call
+  `compute_theta_qualifying_pairs_two_stage` directly.
+- Cointegration is carried through as a merged, clearly-labeled
+  informational overlay in Tab 5's table ("(informacyjnie)" suffix on
+  every cointegration-derived column header) rather than dropped
+  entirely -- confirmed still useful to see, just never as a gate.
+
+**Progress reporting extended to match**, using the exact pattern proven
+in Etap 7q's Tab 5 proof of concept (`background=True`, a `progress`
+Output reusing the tab's own status element with `allow_duplicate=True`,
+`set_progress` as the callback's first argument): applied to Tab 4
+(`run_monthly_persistence_test`), Tab 6 (`run_window_length_comparison`),
+and the Rebalance-tab matching panel (`run_pair_matching_analysis`).
+Coarse stage-level messages ("Liczę IS Score...", "Liczę Trailing
+Score...", "Uruchamiam optymalne skojarzenie...") are used around
+`run_walk_forward_validation` and `run_theta_trailing_stability` (neither
+has per-pair progress plumbing yet, unlike the theta/monthly functions
+threaded in Etap 7q) -- fine-grained per-pair/per-variant progress is
+shown for every stage that already supports `on_progress`.
+
+Verified end to end on all four callbacks via direct function calls with
+a fake `set_progress` collector: Tab 4 produced 153 ordered progress
+messages, Tab 5 (retested after its gate replacement) produced 125, Tab 6
+produced 151, and the Rebalance matching panel produced 78 -- each
+confirmed to start with data-fetch/screening messages, move through
+per-pair/per-variant counters, and end at rendering, with the final
+message in each case matching what the callback's own return value
+reports.
+
+Full app integration recheck (60/60 callbacks -- same count, all changes
+modified existing callback bodies/decorators), solver regression rerun
+(identical weights to every prior check in this project's history).
+
+---
+
+### 7s. Module-Wide Audit — Unified Naming, Scanner Canonicalization, Stale Text Cleanup (complete)
+
+Confirmed follow-up (2026-09-08, nineteenth follow-up): the project owner
+reported the Tab 1 discrepancy was STILL happening despite Etap 7p's
+canonicalization fix, and asked for a full module-wide audit unifying
+"p-value" so it never means two different things, skipping Tabs 2/3 as
+before.
+
+**Root cause of the persisting Tab 1 discrepancy, found and fixed**: the
+canonicalization fix from Etap 7p was applied to the MANUAL pair picker
+(`analyze_pair`) but never to Tab 1's OWN "Skanuj Uniwersum" scanner
+button (`run_relative_value_scan`), which still fetched only 5 years and
+never passed `full_history_df` -- so the SAME pair could show one
+canonical order in the scanner and a DIFFERENT one in the manual picker,
+both within Tab 1. Fixed: the scanner now fetches 10 years and
+canonicalizes via the same theta-persistence criterion as everywhere
+else. Confirmed the gate itself is UNCHANGED (still cointegration
+"Gates Passed", since Tabs 2/3's own candidate selection depends on this
+scanner's output and neither is touched by this follow-up) -- only the
+(Ticker A, Ticker B) ORDER and therefore the displayed diagnostic numbers
+are now consistent. Verified end to end with a controlled test pair: the
+scanner, the manual picker, and Tab 5's batch all independently reported
+the exact same canonical order (B0/A0) and matching numbers for the same
+underlying pair.
+
+**"p-value" disambiguated everywhere it appeared ambiguous**, following
+the confirmed rule: cointegration's p-value is always labeled
+"(kointegracja)" or "(informacyjnie)"; the theta-persistence mechanism's
+p-value (a t-test on monthly alpha values) is always labeled "(t-test)"
+or "(trwałość theta)". Fixed: Tab 1 scanner's table column, Tab 5's
+pooled-significance panel and its scatter chart's axis title/hover
+template/section header, Tab 6's table column. Tabs 2 and 3 explicitly
+left untouched, per confirmed scope.
+
+**Two further stale-text issues found and fixed during the audit, unrelated
+to p-value but caught in the same pass**:
+- Multiple places (Tab 1 scanner's docstring, status message, and layout
+  description; Tab 4's layout description) still referenced a "2Y drift
+  pre-filter" and "4 bramki" (4 gates) -- both removed from the actual
+  mechanism long before this conversation (the drift gate was dropped
+  entirely, taking the gate count from 4 to 3), but the TEXT never caught
+  up. Fixed to describe the current 3-gate mechanism accurately.
+- Several tabs' descriptions (Tab 4, Tab 6, and the scanner's own
+  docstring before this follow-up) claimed to "require a prior scan in
+  the first tab" -- inaccurate for all of them, since each has always been
+  fully self-contained (fetches its own price data independently). Fixed
+  to state plainly that each tab is self-contained.
+
+**A vestigial, actively misleading control found and removed**: Tab 6's
+"MINIMALNA LICZBA BRAMEK" dropdown no longer did anything after Etap 7r
+replaced its candidate-selection logic with the cheap theta screen alone
+(confirmed reasoning preserved from Etap 7r: pre-filtering by window-count
+before the very comparison that measures window-count would hide the
+near-miss cases the tab exists to show) -- the dropdown's value was simply
+never read anymore, silently. Rather than leave a control that looks
+functional but does nothing, it was removed entirely from the layout AND
+from the callback's `State` list and function signature, with the
+description text updated to state plainly that candidate selection uses
+the cheap screen with no window-count threshold.
+
+**Tab 1 scanner also gained the same progress-reporting treatment**
+(`background=True`, `on_progress` threaded into
+`scan_universe_diagnostics`'s own loop -- a new capability added to that
+function, since it previously had none), since upgrading it to 10 years
+with canonicalization roughly doubles its cost per combination, matching
+the pattern already proven in Etaps 7q/7r.
+
+Verified end to end: all six affected surfaces (Tab 1 scanner, Tab 1
+manual picker, Tab 4, Tab 5, Tab 6, Rebalance-tab matching panel) were
+exercised directly via their callback functions with a synthetic
+6-ticker/3-pair universe, confirming each runs without error and that the
+SAME test pair shows identical canonical order and consistent diagnostic
+numbers across the scanner, the manual picker, and Tab 5's batch output.
+Full app integration recheck (60/60 callbacks -- same count, all changes
+modified existing callback bodies/decorators or removed one dead
+State/parameter pair), solver regression rerun (identical weights to
+every prior check in this project's history).
+
+---
+
+### 7t. Two-Tier Quality Threshold for Pair Matching (complete)
+
+Confirmed follow-up (2026-09-08, twentieth follow-up), addressing a
+calibration gap explicitly flagged and deferred back in Etap 7o/7p: since
+`run_maximum_weight_pair_matching` always prefers using MORE edges over
+fewer (every qualifying edge has positive weight, so adding one never
+decreases the total), it will happily pull a company out of clustering
+into a marginal pairing just barely over the qualification bar. Discussed
+and confirmed before implementing: qualification (Etap 7o's "does this
+pair show ANY persistence") and eligibility-for-matching ("is this pairing
+GOOD ENOUGH to be worth pulling companies out of clustering for") are two
+different questions and need two different, separately-tunable
+thresholds.
+
+**Confirmed two-tier design**: a pair still QUALIFIES under the existing,
+looser bar (one-sided p<0.10, t-statistic>0, in at least 1 of 3 window
+variants) -- this stays as the criterion for what appears in the
+informational scan/table/graph, unchanged. To be ELIGIBLE for the actual
+Maximum Weight Matching, a pair must additionally clear a stricter bar,
+confirmed jointly with the project owner: qualifying in at least
+`MATCH_MIN_WINDOWS` (2) of the 3 window variants -- not just 1 -- since
+robustness to how the same total test span happens to be sliced is a
+materially stronger signal than one good result from one particular
+split; AND a "Best t-statystyka" of at least `MATCH_MIN_T_STATISTIC`
+(1.75 -- explicitly chosen by the project owner as a middle ground
+between the p<0.05 (~1.645) and p<0.01 (~2.33) reference points offered).
+
+**New engine function** `filter_pairs_eligible_for_matching`, applied as
+an explicit, separate step BETWEEN `compute_theta_qualifying_pairs_two_stage`
+(or `compute_persistence_qualifying_pairs`) and `run_maximum_weight_pair_matching`
+-- the matching function itself is left untouched and general-purpose (it
+still just runs the exact Blossom algorithm on whatever graph it's given).
+Verified directly with a 4-pair synthetic scenario constructed to trigger
+BOTH failure modes independently: a pair with a high t-statistic (1.9) but
+only 1 qualifying window was correctly excluded, and a separate pair with
+2 qualifying windows but a t-statistic (1.4) below the threshold was also
+correctly excluded, while two genuinely strong pairs passed through
+unaffected -- confirming the AND condition (not just one or the other)
+works as intended, and that neither excluded pair's companies ended up in
+the final matching.
+
+**UI**: the Rebalance-tab matching panel now shows THREE tiers instead of
+two, both in the network graph (bold green = selected, medium dotted gray
+= eligible but lost the matching competition, faint thin dotted = merely
+qualifies but below the eligibility bar) and in the detail table (a
+distinct "Kwalifikuje się, ale poniżej progu jakości" status alongside the
+existing "Wybrana para" / "Dopuszczalna, ale przegrana" statuses) --
+confirmed important for transparency: the project owner should be able to
+see exactly where the line falls, not just a binary in/out result. The
+status message now reports all three counts (qualifying / eligible /
+actually selected) instead of two. The panel's description text was
+extended to explain both thresholds and why the second one exists at all
+(directly referencing the "algorithm always wants one more edge" problem
+that motivated this whole follow-up).
+
+Full app integration recheck (60/60 callbacks -- same count, this modifies
+an existing callback's body), solver regression rerun (identical weights
+to every prior check in this project's history).
+
+**Explicitly still deferred**: whether these two threshold VALUES
+(2 windows, t≥1.75) are actually right for the project owner's real
+universe is an open empirical question, not something this follow-up can
+answer from synthetic data alone -- the project owner is expected to run
+this on the real universe and adjust `MATCH_MIN_WINDOWS`/
+`MATCH_MIN_T_STATISTIC` if the resulting eligible set looks too strict or
+too permissive in practice.
+
+---
+
 ## 8. Implementation Status & Development Roadmap
 
 ### Currently Implemented in Codebase:
