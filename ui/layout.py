@@ -542,12 +542,19 @@ app.layout = html.Div(style={
                             style_data_conditional=[datatable_row_alt_rule(), {'if': {'column_id': 'Assigned Cluster'}, 'backgroundColor': THEME['bg_input'], 'fontWeight': 'bold', 'color': THEME['warn']}]
                         ),
 
-                        html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginTop": "25px"}, children=[
-                            html.Div(id="stage3-confirm-output", style={"fontSize": "13px", "color": THEME["text_dim"]}),
-                            html.Button("CONFIRM & EXPORT TO STAGE 4 SOLVER", id="btn-stage3-confirm", n_clicks=0, style={
-                                "padding": "16px 28px", "backgroundColor": "#FFFFFF", "color": "#0B0B0E", "border": "none",
-                                "borderRadius": "4px", "fontWeight": "700", "cursor": "pointer", "fontSize": "13px"
-                            })
+                        html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginTop": "25px", "gap": "16px", "flexWrap": "wrap"}, children=[
+                            html.Div(id="stage3-confirm-output", style={"fontSize": "13px", "color": THEME["text_dim"], "flex": "1"}),
+                            html.Div(style={"display": "flex", "gap": "10px"}, children=[
+                                html.Button("EKSPERYMENTUJ (BEZ ZAPISU)", id="btn-stage3-confirm-experimental", n_clicks=0, style={
+                                    "padding": "16px 22px", "backgroundColor": "transparent", "color": THEME["text_dim"],
+                                    "border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px", "fontWeight": "700",
+                                    "cursor": "pointer", "fontSize": "12px"
+                                }),
+                                html.Button("CONFIRM & EXPORT (ZAPISZ DO RESEARCH)", id="btn-stage3-confirm", n_clicks=0, style={
+                                    "padding": "16px 28px", "backgroundColor": "#FFFFFF", "color": "#0B0B0E", "border": "none",
+                                    "borderRadius": "4px", "fontWeight": "700", "cursor": "pointer", "fontSize": "13px"
+                                }),
+                            ]),
                         ])
                     ])
                 ])
@@ -655,8 +662,22 @@ app.layout = html.Div(style={
 
                         html.Hr(style={"border": "none", "borderTop": f"1px solid {THEME['border']}", "margin": "10px 0 30px 0"}),
 
-                        html.Div("3D EFFICIENT RISK-REWARD SURFACE", style={"fontSize": "12px", "color": THEME["text_dim"], "fontWeight": "bold", "marginBottom": "12px"}),
-                        dcc.Graph(id="graph-stage4b-3d", config={"displayModeBar": False}),
+                        html.Div(style={"padding": "22px", "backgroundColor": THEME["bg_card"], "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}"}, children=[
+                            html.Div("SAVE CURRENT PORTFOLIO", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "1px", "marginBottom": "10px"}),
+                            html.Div("Zapisuje zoptymalizowany portfel ze Stage 4B jako nowy punkt startowy do trackingu (dostępny później w Sandbox).",
+                                     style={"fontSize": "10px", "color": THEME["text_dim"], "lineHeight": "1.5", "marginBottom": "14px"}),
+                            html.Div(style={"display": "flex", "gap": "12px", "alignItems": "center", "flexWrap": "wrap"}, children=[
+                                dcc.Input(id="input-snapshot-name-stage4", type="text", placeholder="np. Defensive_Lambda0.8_v1", style={
+                                    "flex": "1", "minWidth": "220px", "padding": "10px", "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}",
+                                    "backgroundColor": THEME["bg_base"], "color": THEME["text_white"], "boxSizing": "border-box", "fontSize": "12px"
+                                }),
+                                html.Button("SAVE PORTFOLIO", id="btn-save-snapshot-stage4", n_clicks=0, style={
+                                    "padding": "12px 22px", "backgroundColor": THEME["accent"], "color": THEME["text_white"],
+                                    "border": "none", "borderRadius": "4px", "fontWeight": "700", "cursor": "pointer", "fontSize": "11px", "letterSpacing": "0.5px"
+                                }),
+                            ]),
+                            html.Div(id="snapshot-save-status-stage4", style={"marginTop": "10px", "fontSize": "11px"})
+                        ]),
                     ])
                 ])
             ])

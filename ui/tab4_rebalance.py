@@ -1,9 +1,15 @@
 """
 ui/tab4_rebalance.py
 ======================
-Tab 4: Strategy Params, TPS & 3D Optimization -- the True Two-Stage SLSQP
-solver (Section 3.4) + Dynamic Singleton Split, results table/donut/3D
-surface, and portfolio snapshot save.
+Tab 4: Strategy Params & TPS Optimization -- the True Two-Stage SLSQP
+solver (Section 3.4) + Dynamic Singleton Split, results table/donut,
+and portfolio snapshot save (both from here and from Sandbox).
+
+Confirmed removal (2026-09-18): the 3D risk-reward scatter
+(render_stage4b_3d_surface, graph-stage4b-3d) was dropped from the UI --
+project owner judged it added no diagnostic value over the existing
+results table + donut. Removed the callback entirely rather than leaving
+it orphaned against a non-existent Output.
 
 Moved out of quant_terminal.py (Etap 0 architecture split, PROJECT_CONTEXT.md)
 with NO behavior change.
@@ -312,73 +318,39 @@ def render_singleton_split_panel(results):
 
 
 @app.callback(
-    Output("graph-stage4b-3d", "figure"),
-    Input("store-stage4b-results", "data"), Input("store-stage4a-tailrisk", "data"),
-    prevent_initial_call=True
-)
-def render_stage4b_3d_surface(results, tailrisk):
-    """3D risk-reward space: X=delta_ann_i, Y=CDD_0.10_i, Z=mu_i, kolor=klaster, + punkt portfela."""
-    fig = go.Figure()
-    fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"], height=650)
-    if not results or results.get("error") or not tailrisk:
-        return fig
-
-    tickers = results["tickers"]
-    mu_map, delta_map = results["mu_i_map"], results["delta_ann_map"]
-    cdd_map = tailrisk.get("cdd010", {})
-    cluster_of, tps_map = results["cluster_of"], results["asset_tps"]
-
-    valid = [t for t in tickers if t in cdd_map]
-    xs = [delta_map[t] for t in valid]
-    ys = [cdd_map[t] for t in valid]
-    zs = [mu_map[t] for t in valid]
-    colors = [CLUSTER_PALETTE.get(((int(cluster_of.get(t, 1)) - 1) % 6) + 1, "#888888") for t in valid]
-    hover_text = [
-        f"<b>{t}</b><br>Cluster: {cluster_of.get(t, 1)}<br>μ_i: {mu_map[t]*100:+.1f}%<br>"
-        f"δ_ann: {delta_map[t]*100:.1f}%<br>CDD 0.10: {cdd_map[t]*100:.1f}%<br>TPS_i: {tps_map.get(t, 0.0):+.2f}"
-        for t in valid
-    ]
-
-    fig.add_trace(go.Scatter3d(
-        x=xs, y=ys, z=zs, mode='markers',
-        marker=dict(size=7, color=colors, line=dict(color=THEME["bg_card"], width=1)),
-        text=hover_text, hoverinfo='text', name="Assets"
-    ))
-
-    # "Gold star" portfolio point -- Scatter3d nie ma symbolu star, więc duży złoty diamond z białą obwódką
-    # to najbliższy wizualnie odpowiednik w ramach dostępnych symboli marker 3D w Plotly.
-    fig.add_trace(go.Scatter3d(
-        x=[results["delta_p"]], y=[results["cdd_p"]], z=[results["mu_p"]], mode='markers',
-        marker=dict(size=14, color="#FFD700", symbol='diamond', line=dict(color="#FFFFFF", width=2)),
-        text=[f"<b>FINAL TPS PORTFOLIO</b><br>μ_P: {results['mu_p']*100:+.1f}%<br>δ_P: {results['delta_p']*100:.1f}%<br>"
-              f"CDD 0.10,P: {results['cdd_p']*100:.1f}%<br>TPS_P: {results['tps_p']:.2f}"],
-        hoverinfo='text', name="Final Portfolio"
-    ))
-
-    fig.update_layout(
-        scene=dict(
-            xaxis=dict(title="Annualized Downside Risk (δ_ann)", backgroundcolor=THEME["bg_base"], gridcolor="#1E1E28", color=THEME["text_dim"]),
-            yaxis=dict(title="10% Quantile Drawdown (CDD 0.10)", backgroundcolor=THEME["bg_base"], gridcolor="#1E1E28", color=THEME["text_dim"]),
-            zaxis=dict(title="Composite Forward Upside (μ_i)", backgroundcolor=THEME["bg_base"], gridcolor="#1E1E28", color=THEME["text_dim"]),
-        ),
-        margin=dict(l=0, r=0, b=0, t=30), showlegend=True, legend=dict(font=dict(color=THEME["text_white"])), font_family=THEME["font"], height=650
-    )
-    return fig
-
-
-@app.callback(
-    Output("snapshot-save-status", "children"), Output("store-snapshots-refresh", "data", allow_duplicate=True),
-    Input("btn-save-snapshot", "n_clicks"),
-    State("input-snapshot-name", "value"), State("store-stage4b-results", "data"),
+    Output("snapshot-save-status", "children"), Output("snapshot-save-status-stage4", "children"),
+    Output("store-snapshots-refresh", "data", allow_duplicate=True),
+    Input("btn-save-snapshot", "n_clicks"), Input("btn-save-snapshot-stage4", "n_clicks"),
+    State("input-snapshot-name", "value"), State("input-snapshot-name-stage4", "value"),
+    State("store-stage4b-results", "data"),
     State("store-stage3-final-payload", "data"), State("store-stage4a-params", "data"),
     State("store-stage4a-tailrisk", "data"), State("store-snapshots-refresh", "data"),
     prevent_initial_call=True
 )
-def save_snapshot_callback(n_clicks, snapshot_name, stage4b_results, stage3_payload, stage4a_params, tailrisk, counter):
+def save_snapshot_callback(_n_sandbox, _n_stage4, name_sandbox, name_stage4, stage4b_results, stage3_payload, stage4a_params, tailrisk, counter):
+    """
+    Confirmed (2026-09-18): ten sam zapis wywoływalny z DWÓCH miejsc --
+    przycisk w Sandbox (istniejący) i nowy przycisk bezpośrednio w Rebalance
+    (Tab 4), zaraz po tym jak solver skończy liczyć, zamiast wymuszać
+    przejście do innej zakładki tylko po to, żeby zapisać właśnie policzony
+    portfel. Jedna funkcja, dwa Outputy statusu (po jednym na każdą
+    zakładkę) -- ustalamy przez callback_context, który przycisk faktycznie
+    kliknięto, i tej samej logiki/danych używamy niezależnie od źródła.
+    """
+    ctx = dash.callback_context
+    trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
+    from_stage4 = (trigger_id == "btn-save-snapshot-stage4")
+    snapshot_name = name_stage4 if from_stage4 else name_sandbox
+
+    def _both(msg):
+        return (dash.no_update, msg) if from_stage4 else (msg, dash.no_update)
+
     if not stage4b_results or stage4b_results.get("error"):
-        return html.Span("Brak poprawnych wyników optymalizacji do zapisania.", style={"color": THEME["orange"]}), dash.no_update
+        s1, s2 = _both(html.Span("Brak poprawnych wyników optymalizacji do zapisania.", style={"color": THEME["orange"]}))
+        return s1, s2, dash.no_update
     if not stage3_payload:
-        return html.Span("Brak danych Stage 3 (fundamentals) do zapisania.", style={"color": THEME["orange"]}), dash.no_update
+        s1, s2 = _both(html.Span("Brak danych Stage 3 (fundamentals) do zapisania.", style={"color": THEME["orange"]}))
+        return s1, s2, dash.no_update
 
     weights = stage4b_results["weights"]
     cluster_of = stage4b_results["cluster_of"]
@@ -405,12 +377,14 @@ def save_snapshot_callback(n_clicks, snapshot_name, stage4b_results, stage3_payl
             z_scores=z_scores
         )
     except Exception as e:
-        return html.Span(f"Błąd zapisu: {str(e)}", style={"color": THEME["orange"]}), dash.no_update
+        s1, s2 = _both(html.Span(f"Błąd zapisu: {str(e)}", style={"color": THEME["orange"]}))
+        return s1, s2, dash.no_update
 
     spy_note = "" if "SPY" in entry_prices else " (nie udało się pobrać ceny SPY na benchmark)"
     status = html.Span(f"Zapisano: \"{record['snapshot_name']}\" ({record['snapshot_id']}){spy_note}",
                         style={"color": THEME["accent"], "fontWeight": "bold"})
-    return status, (counter or 0) + 1
+    s1, s2 = _both(status)
+    return s1, s2, (counter or 0) + 1
 
 
 @app.callback(

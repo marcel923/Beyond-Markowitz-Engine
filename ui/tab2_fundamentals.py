@@ -20,6 +20,7 @@ from ui.app_instance import app
 from ui.theme import THEME, CLUSTER_PALETTE
 from ui.components import STAGE3_BASELINE_MODELS, STAGE3_FUNDAMENTAL_COLS
 from engine.clustering import compute_semicovariance_matrix, semicov_to_semicorr
+from data import company_store as comp
 
 def compute_stage3_baseline_clusters(baseline_key, k, monthly_returns_data, daily_returns_data):
     """
@@ -181,16 +182,64 @@ def track_stage3_edits(rows, last_suggestion, manual_flags):
 
 @app.callback(
     Output("store-stage3-final-payload", "data"), Output("stage3-confirm-output", "children"),
-    Input("btn-stage3-confirm", "n_clicks"), State("store-stage3-table", "data"),
+    Input("btn-stage3-confirm", "n_clicks"), Input("btn-stage3-confirm-experimental", "n_clicks"),
+    State("store-stage3-table", "data"),
     prevent_initial_call=True
 )
-def confirm_stage3_export(n_clicks, table_data):
+def confirm_stage3_export(_n_save, _n_experimental, table_data):
+    """
+    Confirmed 2026-09-18 (post-solver-pairing follow-up, przed wpieciem par):
+    dwa przyciski dzielace to, co bylo jedna operacja, na dwie -- zapis do
+    company_store (widoczny pozniej w Research) jest teraz JAWNA decyzja,
+    nie efekt uboczny kazdego uruchomienia solvera. Powod: dane w tabeli
+    Stage 3 moga byc celowo eksperymentalne/wymyslone (np. test wrazliwosci
+    solvera na skrajny spread analitykow) i uzytkownik nie chce takich
+    wartosci trwale ladujacych do historii spolki uzywanej pozniej przez
+    Research/projekcje pojedynczego aktywa.
+
+    "CONFIRM & EXPORT (ZAPISZ DO RESEARCH)" (btn-stage3-confirm): eksportuje
+    DO Stage 4 solvera, TAKZE zapisuje kazdy wiersz przez
+    company_store.append_entry -- pod dzisiejsza data, upsert (nadpisze
+    dzisiejszy wpis, jesli juz istnieje).
+
+    "EKSPERYMENTUJ (BEZ ZAPISU)" (btn-stage3-confirm-experimental): dokladnie
+    ten sam eksport do Stage 4 solvera, ZERO wywolan append_entry -- solver
+    dziala identycznie w obu trybach, roznica jest wylacznie w trwalosci
+    danych fundamentalnych.
+    """
     if not table_data:
         return dash.no_update, html.Span("Brak danych do eksportu.", style={"color": THEME["orange"]})
+
+    ctx = dash.callback_context
+    trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
+    should_save = (trigger_id == "btn-stage3-confirm")
+
     n_assets = len(table_data)
     n_clusters = len(set(r.get("Assigned Cluster") for r in table_data))
     missing_price = [r["Ticker"] for r in table_data if not r.get("Current Price (P0)")]
     warning = f" — Brak ceny dla: {', '.join(missing_price)}" if missing_price else ""
-    msg = html.Span(f"Zablokowano {n_assets} aktywów w {n_clusters} klastrach — gotowe dla Stage 4.{warning}",
-                     style={"color": THEME["orange"] if missing_price else THEME["accent"], "fontWeight": "bold"})
+
+    if should_save:
+        for r in table_data:
+            comp.append_entry(
+                ticker=r["Ticker"],
+                p0=r.get("Current Price (P0)", 0.0) or 0.0,
+                target_consensus=r.get("Target Consensus (Ti)", 0.0) or 0.0,
+                target_high=r.get("Target High (T_high)", 0.0) or 0.0,
+                target_low=r.get("Target Low (T_low)", 0.0) or 0.0,
+                n_analysts=r.get("Analyst Coverage (Ni)", 0) or 0,
+                eps_cagr=r.get("EPS 2Y CAGR (Gi,2Y)", 0.0) or 0.0,
+                eps_rev_90d=r.get("90d EPS Revision (ΔEPS90d)", 0.0) or 0.0,
+            )
+        msg = html.Span(
+            f"Zablokowano {n_assets} aktywów w {n_clusters} klastrach — gotowe dla Stage 4. "
+            f"Dane fundamentalne zapisane do historii spółek (widoczne w Research).{warning}",
+            style={"color": THEME["orange"] if missing_price else THEME["accent"], "fontWeight": "bold"}
+        )
+    else:
+        msg = html.Span(
+            f"[TRYB EKSPERYMENTALNY] Zablokowano {n_assets} aktywów w {n_clusters} klastrach — gotowe dla Stage 4. "
+            f"Dane NIE zostały zapisane do historii spółek.{warning}",
+            style={"color": THEME["orange"] if missing_price else THEME["text_dim"], "fontWeight": "bold"}
+        )
     return table_data, msg
