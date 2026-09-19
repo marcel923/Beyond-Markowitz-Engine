@@ -12,7 +12,8 @@ import re
 
 import numpy as np
 import pandas as pd
-from dash import dcc, html
+from dash import dcc, html, dash_table
+import plotly.graph_objects as go
 
 from ui.theme import THEME
 
@@ -133,6 +134,8 @@ STAGE4A_PARAMS_CONFIG = [
      "comment": "Growth/Upside Blend (Section 4.2, Etap 2). α=0.0 → pure analyst target-price consensus. α=0.5 → equal blend. α=1.0 → pure fundamental EPS growth (the analyst dispersion penalty γ drops out entirely at α=1.0, since it only ever discounts the target-price branch). Analyst coverage confidence A(N_i) still discounts the result at any α — coverage depth is treated as a general forecast-quality signal, not specific to target prices."},
     {"id": "lambda", "name": "Lambda", "symbol": "λ", "default": 3.0, "min": 0.1, "max": 25.0, "step": 0.1,
      "comment": "Crash-overlap penalty sensitivity: exp(λ·√(wᵀKw)). Rescaled for the K-based quadratic penalty (Section 3.3/3.4) — √(wᵀKw) typically runs ≈0.05–0.20, so λ needs a much wider range than the old per-asset Z-score exponent did to have a comparable effect."},
+    {"id": "nu", "name": "Nu (wrażliwość zmienności)", "symbol": "ν", "default": 0.0, "min": -5.0, "max": 15.0, "step": 0.5,
+     "comment": "Dodatkowy wykładniczy mnożnik na PORTFELOWEJ zmienności Estrady: exp(ν·√(wᵀΣ_εw)), obok istniejącego λ na K. Przy ν=0 wzór wraca dokładnie do poprzedniej wersji. ν>0 dokłada karę za zmienność silniejszą niż sam pierwiastek Sortino już daje; ν<0 PREMIUJE zmienność zamiast ją karać (teza Part I: w hiper-growth zmienność bywa górną, korzystną skośnością, nie czystym ryzykiem)."},
     {"id": "gamma", "name": "Gamma", "symbol": "γ", "default": 1.50, "min": 0.10, "max": 5.00, "step": 0.10,
      "comment": "Analyst range spread penalty. Disincentivizes stocks with wide target price disagreements."},
     {"id": "kappa", "name": "Kappa", "symbol": "κ", "default": 1.00, "min": 0.00, "max": 5.00, "step": 0.10,
@@ -234,3 +237,327 @@ STAGE3_FUNDAMENTAL_COLS = ["Current Price (P0)", "Target Consensus (Ti)", "Targe
 # UWAGA: EPS 2Y CAGR i 90d EPS Revision są WPISYWANE i PRZECHOWYWANE jako liczby całe/procenty
 # (np. 55 = 55%, -3 = -3%). Podział przez 100.0 następuje WYŁĄCZNIE wewnątrz compute_composite_upside_row,
 # nigdy w samej tabeli — dzięki temu nie trzeba wpisywać 0.55 zamiast 55.
+
+# ---------------------------------------------------------------------------
+# Relative Value -- nakladka po optymalizacji: wspolne budowniczy UI dla
+# Rebalance (Tab 4) i Sandbox (Tab 5), zeby oba wygladaly i dzialaly
+# identycznie (2026-09-18).
+# ---------------------------------------------------------------------------
+
+def build_pair_zscore_figure(pair_info, today_label="dziś"):
+    """Wykres Z-score dla jednej dopasowanej pary -- linia historyczna,
+    linia zerowa, i przerywana linia + adnotacja na aktualnym Z-score.
+    `today_label` pozwala Sandboxowi podpisac to jako "dzien zapisu"
+    zamiast "dzis", skoro w Sandboxie caly ten punkt jest z definicji
+    zamrozony na dacie utworzenia snapshotu, nie na biezacej dacie
+    (2026-09-19, naprawa look-ahead bias)."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=pair_info["zscore_dates"], y=pair_info["zscore_values"], mode="lines",
+        line=dict(color=THEME["accent"], width=1.5), name="Z-score"
+    ))
+    fig.add_hline(y=0, line=dict(color=THEME["text_dim"], width=1, dash="dot"))
+    fig.add_hline(y=pair_info["current_z"], line=dict(color=THEME["orange"], width=1.5, dash="dash"))
+    fig.add_annotation(
+        x=pair_info["zscore_dates"][-1], y=pair_info["current_z"],
+        text=f"{today_label}: Z={pair_info['current_z']:.2f}", showarrow=True, arrowhead=2,
+        font=dict(color=THEME["orange"], size=10), ax=-60, ay=-25
+    )
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        height=220, margin=dict(l=40, r=20, t=30, b=30),
+        title=dict(text=f"{pair_info['ticker_a']} / {pair_info['ticker_b']} -- Z-score", font=dict(size=12, color=THEME["text_white"])),
+        xaxis=dict(showgrid=False, tickfont=dict(size=9, color=THEME["text_dim"])),
+        yaxis=dict(title="Z-score", showgrid=True, gridcolor="#1E1E28", tickfont=dict(size=9, color=THEME["text_dim"])),
+        showlegend=False,
+    )
+    return fig
+
+
+def build_pair_weight_history_figure(pair_info, theta, today_label="dziś"):
+    """
+    Udzial wagi tickera A w parze W CZASIE, WYLICZONY z juz-zbuforowanej
+    historii Z-score (zero dodatkowego liczenia/pobierania -- ten sam wzor
+    0.5+0.5*theta*tanh(-Z), zastosowany do calej historii Z, nie tylko do
+    ostatniego punktu). Odpowiada wprost na pytanie "jak w czasie zmienialby
+    sie podzial tej pary" -- reaguje na biezaca theta natychmiast, bo caly
+    wklad to Z-score, ktore juz mamy (2026-09-19)."""
+    z_arr = np.array(pair_info["zscore_values"])
+    weight_a_history = 0.5 + 0.5 * theta * np.tanh(-z_arr)
+    current_weight_a = float(weight_a_history[-1]) if len(weight_a_history) else 0.5
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=pair_info["zscore_dates"], y=weight_a_history * 100, mode="lines",
+        line=dict(color=THEME["pos"] if "pos" in THEME else "#00C853", width=1.5), name=f"Udział {pair_info['ticker_a']}"
+    ))
+    fig.add_hline(y=50, line=dict(color=THEME["text_dim"], width=1, dash="dot"))
+    fig.add_annotation(
+        x=pair_info["zscore_dates"][-1], y=current_weight_a * 100,
+        text=f"{today_label}: {pair_info['ticker_a']}={current_weight_a*100:.1f}%", showarrow=True, arrowhead=2,
+        font=dict(color=THEME["orange"], size=10), ax=-60, ay=-25
+    )
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        height=220, margin=dict(l=40, r=20, t=30, b=30),
+        title=dict(text=f"{pair_info['ticker_a']} / {pair_info['ticker_b']} -- udział wagi w parze (θ={theta})", font=dict(size=12, color=THEME["text_white"])),
+        xaxis=dict(showgrid=False, tickfont=dict(size=9, color=THEME["text_dim"])),
+        yaxis=dict(title=f"Udział {pair_info['ticker_a']} (%)", range=[0, 100], showgrid=True, gridcolor="#1E1E28", tickfont=dict(size=9, color=THEME["text_dim"])),
+        showlegend=False,
+    )
+    return fig
+
+
+def build_pair_overlay_output(weights, match_cache, theta, w_max, apply_tilts_fn, today_label="dziś"):
+    """
+    Tabela przed/po + wykresy (Z-score ORAZ udzial wagi w czasie) +
+    diagnostyka utraconej alternatywy -- wspolne dla Rebalance i Sandbox.
+    `apply_tilts_fn` to engine.pairs.apply_tilts_to_matched_pairs
+    (wstrzykniete jako argument, zeby components.py nie musial importowac
+    engine/ -- utrzymuje UI/engine jako oddzielne warstwy). `today_label`:
+    "dziś" w Rebalansie (analiza faktycznie jest na dzis), "dzień zapisu"
+    w Sandboxie (analiza jest zamrozona na dacie utworzenia snapshotu,
+    2026-09-19 naprawa look-ahead bias -- patrz ui/tab5_sandbox.py).
+    """
+    if not match_cache or match_cache.get("n_selected", 0) < 2:
+        return html.Div(), html.Div("Brak wyniku -- najpierw uruchom \"ZNAJDŹ PARY\".", style={"color": THEME["orange"]})
+
+    tilt_result = apply_tilts_fn(weights, match_cache["matched_pairs_info"], theta=theta, wmax=w_max)
+    selected_tickers = [t for t, w in weights.items() if w and w > 1e-9]
+
+    rows = []
+    for t in selected_tickers:
+        before = weights.get(t, 0.0)
+        after = tilt_result["weights"].get(t, before)
+        rows.append({"Ticker": t, "Waga przed": round(before, 4), "Waga po": round(after, 4), "Zmiana": round(after - before, 4)})
+
+    table = dash_table.DataTable(
+        columns=[
+            {"name": "Ticker", "id": "Ticker"},
+            {"name": "Waga przed", "id": "Waga przed", "type": "numeric", "format": {"specifier": ".4f"}},
+            {"name": "Waga po", "id": "Waga po", "type": "numeric", "format": {"specifier": ".4f"}},
+            {"name": "Zmiana", "id": "Zmiana", "type": "numeric", "format": {"specifier": "+.4f"}},
+        ],
+        data=rows, sort_action="native", page_size=25,
+        style_header=datatable_style_header(), style_data=datatable_style_data(), style_cell=datatable_style_cell(),
+        style_data_conditional=[
+            datatable_row_alt_rule(),
+            {"if": {"filter_query": "{Zmiana} > 0", "column_id": "Zmiana"}, "color": THEME["accent"], "fontWeight": "bold"},
+            {"if": {"filter_query": "{Zmiana} < 0", "column_id": "Zmiana"}, "color": THEME["orange"], "fontWeight": "bold"},
+        ],
+    )
+
+    wmax_note = html.Div(
+        "Nakładka IGNORUJE w_max całkowicie -- ma własną mechanikę (mnożnikowo-przeskalowaną, nie ograniczoną limitem koncentracji "
+        "solvera). Przy wystarczająco silnym sygnale para może wylądować ze znacznie wyższą koncentracją niż standardowy limit portfela.",
+        style={"fontSize": "10px", "color": THEME["text_dim"], "backgroundColor": "rgba(255,255,255,0.03)",
+               "padding": "8px 10px", "borderRadius": "4px", "marginTop": "10px", "lineHeight": "1.5"}
+    ) if match_cache["matched_pairs_info"] else html.Div()
+
+    network_section = html.Div()
+    if match_cache.get("qualifying_pairs"):
+        net_fig, matrix_fig = build_pair_network_and_matrix(
+            match_cache.get("all_selected_tickers", selected_tickers),
+            match_cache["qualifying_pairs"], match_cache.get("eligible_pairs", []), match_cache["matched_pairs_info"]
+        )
+        network_section = html.Div([
+            html.Div("SIEĆ I MACIERZ T-STATYSTYK (zielone/pogrubione = wybrana para, przerywane szare = dopuszczalna ale przegrana, cienkie blade = tylko kwalifikuje się):",
+                     style={"fontSize": "10.5px", "fontWeight": "bold", "color": THEME["text_dim"], "marginTop": "18px", "marginBottom": "8px"}),
+            html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "12px"}, children=[
+                dcc.Graph(figure=net_fig, config={"displayModeBar": False}, style={"height": "360px"}),
+                dcc.Graph(figure=matrix_fig, config={"displayModeBar": False}, style={"height": "360px"}),
+            ])
+        ])
+
+    charts = html.Div()
+    if match_cache["matched_pairs_info"]:
+        chart_divs = []
+        for p in match_cache["matched_pairs_info"]:
+            chart_divs.append(dcc.Graph(figure=build_pair_zscore_figure(p, today_label=today_label), config={"displayModeBar": False}))
+            chart_divs.append(dcc.Graph(figure=build_pair_weight_history_figure(p, theta, today_label=today_label), config={"displayModeBar": False}))
+        t_stats_line = ", ".join(f"{p['ticker_a']}/{p['ticker_b']}: t={p.get('t_statistic', '?')}" for p in match_cache["matched_pairs_info"])
+        charts = html.Div([
+            html.Div(f"KAŻDA DOPASOWANA PARA: Z-score i wynikający z niego udział wagi w czasie (kontekst ostatnich ~2 lat, linia przerywana = {today_label}). "
+                     f"t-statystyka: {t_stats_line}",
+                     style={"fontSize": "10.5px", "fontWeight": "bold", "color": THEME["text_dim"], "marginTop": "18px", "marginBottom": "8px"}),
+            html.Div(chart_divs, style={"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(320px, 1fr))", "gap": "12px"})
+        ])
+
+    blocking_info = html.Div()
+    if match_cache["unmatched_with_alternative"]:
+        items = [html.Li(f"{u['ticker']}: nieużyta relacja z {u['alternative_ticker']} (najlepsza t-statystyka={u['best_t_statystyka']})")
+                 for u in match_cache["unmatched_with_alternative"]]
+        blocking_info = html.Div([
+            html.Div("SPÓŁKI BEZ PARY, ALE Z NIEUŻYTĄ, KWALIFIKUJĄCĄ SIĘ ALTERNATYWĄ (informacyjnie, Droga B -- bez automatycznego działania):",
+                     style={"fontSize": "10.5px", "fontWeight": "bold", "color": THEME["warn"], "marginTop": "18px", "marginBottom": "8px"}),
+            html.Ul(items, style={"fontSize": "11px", "color": THEME["text_dim"]}),
+        ])
+
+    as_of_note = f" (dane wyłącznie do {match_cache['as_of_date']})" if match_cache.get("as_of_date") else ""
+    status = html.Div(
+        f"{match_cache['n_selected']} spółek z dodatnią wagą{as_of_note} -- {match_cache['n_qualifying']} par kwalifikujących się, "
+        f"{match_cache['n_eligible']} dopuszczalnych do skojarzenia, {len(tilt_result['applied_pairs'])} faktycznie zastosowanych "
+        f"(theta={theta}).",
+        style={"color": THEME["accent"]}
+    )
+    return html.Div([table, wmax_note, network_section, charts, blocking_info]), status
+
+
+# ---------------------------------------------------------------------------
+# Siec grafow + macierz t-statystyk -- wspolny budowniczy (2026-09-19),
+# wydzielony ze wzorca juz uzywanego w ui/tab1_market_data.py::run_pair_matching_analysis,
+# zeby nakladka Relative Value (Rebalance/Sandbox) mogla pokazac dokladnie
+# taka sama, trojpoziomowa wizualizacje (wybrana/dopuszczalna-przegrana/
+# tylko-kwalifikujaca-sie), zamiast tylko tabeli i osobnych wykresow Z-score.
+# ---------------------------------------------------------------------------
+
+def _circular_layout_generic(nodes):
+    """Deterministyczny uklad kolowy -- identyczny wzorzec co
+    ui/tab1_market_data.py::_circular_layout, zdublowany tutaj celowo (mala,
+    samodzielna funkcja), zeby components.py nie musial importowac z ui/tab1_market_data.py
+    (odwrocilo by to kierunek zaleznosci warstwy UI)."""
+    n = len(nodes)
+    positions = {}
+    for i, node in enumerate(nodes):
+        angle = 2 * np.pi * i / n - np.pi / 2
+        positions[node] = (np.cos(angle), np.sin(angle))
+    return positions
+
+
+def build_pair_network_and_matrix(all_selected_tickers, qualifying_pairs, eligible_pairs, matched_pairs_info):
+    """
+    Buduje (network_fig, matrix_fig) w dokladnie tym samym stylu co panel
+    doboru par w Rebalansie/Stage 1 (3 poziomy: wybrana para / dopuszczalna
+    ale przegrana w skojarzeniu / tylko kwalifikujaca sie). Parametry to
+    juz-gotowe listy dictow z engine.pairs.find_matched_pairs_for_overlay
+    (qualifying_pairs, eligible_pairs, matched_pairs_info), nie surowe
+    DataFrame'y -- components.py nie zalezy od engine/.
+    """
+    empty_fig = go.Figure()
+    empty_fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"])
+    if not qualifying_pairs:
+        return empty_fig, empty_fig
+
+    matched_edge_set = {(p["ticker_a"], p["ticker_b"]) for p in matched_pairs_info}
+    matched_tickers = {t for pair in matched_edge_set for t in pair}
+    eligible_edge_set = {(p["ticker_a"], p["ticker_b"]) for p in eligible_pairs}
+    all_qualifying_edges = [(p["ticker_a"], p["ticker_b"], p["t_statistic"]) for p in qualifying_pairs]
+    graph_nodes = sorted({t for a, b, _w in all_qualifying_edges for t in (a, b)})
+
+    def _edge_tier(a, b):
+        if (a, b) in matched_edge_set or (b, a) in matched_edge_set:
+            return "selected"
+        if (a, b) in eligible_edge_set or (b, a) in eligible_edge_set:
+            return "eligible"
+        return "qualifies_only"
+
+    TIER_STYLE = {
+        "selected": dict(color=THEME["pos"] if "pos" in THEME else "#00C853", width=4, dash="solid"),
+        "eligible": dict(color=THEME["border_strong"], width=1.5, dash="dot"),
+        "qualifies_only": dict(color=THEME["border"], width=0.75, dash="dot"),
+    }
+
+    positions = _circular_layout_generic(graph_nodes)
+    net_fig = go.Figure()
+    for a, b, w in all_qualifying_edges:
+        tier = _edge_tier(a, b)
+        style = TIER_STYLE[tier]
+        x0, y0 = positions[a]; x1, y1 = positions[b]
+        net_fig.add_trace(go.Scatter(
+            x=[x0, x1], y=[y0, y1], mode="lines",
+            line=dict(color=style["color"], width=style["width"], dash=style["dash"]),
+            hoverinfo="text", text=f"{a}/{b}: t={w:.3f} ({tier})", showlegend=False,
+        ))
+    node_x = [positions[n][0] for n in graph_nodes]
+    node_y = [positions[n][1] for n in graph_nodes]
+    node_colors = [(THEME["pos"] if "pos" in THEME else "#00C853") if n in matched_tickers else THEME["text_dim"] for n in graph_nodes]
+    net_fig.add_trace(go.Scatter(
+        x=node_x, y=node_y, mode="markers+text", text=graph_nodes, textposition="middle center",
+        marker=dict(size=34, color=node_colors, line=dict(width=1, color=THEME["bg_base"])),
+        textfont=dict(size=9, color=THEME["bg_base"]), showlegend=False, hoverinfo="text",
+    ))
+    net_fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        margin=dict(l=20, r=20, t=20, b=20),
+        xaxis=dict(visible=False, range=[-1.3, 1.3]), yaxis=dict(visible=False, range=[-1.3, 1.3]),
+    )
+
+    matrix_tickers = graph_nodes
+    z = np.full((len(matrix_tickers), len(matrix_tickers)), np.nan)
+    idx = {t: i for i, t in enumerate(matrix_tickers)}
+    for a, b, w in all_qualifying_edges:
+        z[idx[a]][idx[b]] = w
+        z[idx[b]][idx[a]] = w
+    matrix_fig = go.Figure(data=go.Heatmap(
+        z=z, x=matrix_tickers, y=matrix_tickers, colorscale="Blues", colorbar=dict(title="t-stat"),
+        hoverongaps=False, hovertemplate="%{y} / %{x}<br>t=%{z:.3f}<extra></extra>",
+    ))
+    for a, b in matched_edge_set:
+        if a in idx and b in idx:
+            for r, c in [(idx[a], idx[b]), (idx[b], idx[a])]:
+                matrix_fig.add_shape(type="rect", x0=c - 0.5, x1=c + 0.5, y0=r - 0.5, y1=r + 0.5,
+                                      line=dict(color=(THEME["pos"] if "pos" in THEME else "#00C853"), width=3))
+    matrix_fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        margin=dict(l=20, r=20, t=20, b=20),
+        xaxis=dict(tickfont=dict(size=9, color=THEME["text_dim"])), yaxis=dict(tickfont=dict(size=9, color=THEME["text_dim"])),
+    )
+    return net_fig, matrix_fig
+
+
+# ---------------------------------------------------------------------------
+# Pelny rozklad wzoru TPS z realnymi wartosciami (2026-09-19, na prosbe
+# wlasciciela projektu -- "widze tylko suwaki, chce widziec cala formule
+# z kazda wartoscia policzona"). Wspolne dla Rebalance (Tab 4) i Sandbox.
+# ---------------------------------------------------------------------------
+
+def build_tps_formula_breakdown(mu_p, rf, sigma_p, k_p, lam, nu, tps_p=None):
+    """
+    Pokazuje KAZDY skladnik TPSP(w) = (mu_P - Rf) / (sigma_P*exp(nu*sigma_P)*exp(lam*K_P) + eps)
+    z jego aktualna, policzona wartoscia -- nie tylko suwaki parametrow.
+    Dolacza tez wprost zadany stosunek sigma_P:K_P, zeby bylo widac relatywna
+    skale obu skladnikow ryzyka bez recznego liczenia.
+    """
+    if mu_p is None or sigma_p is None or k_p is None:
+        return html.Div("Brak jeszcze policzonych wartości portfela.", style={"fontSize": "11px", "color": THEME["text_dim"]})
+
+    lam = lam if isinstance(lam, (int, float)) else 0.0
+    nu = nu if isinstance(nu, (int, float)) else 0.0
+    numerator = mu_p - rf
+    exp_lam_k = np.exp(lam * k_p)
+    exp_nu_sigma = np.exp(nu * sigma_p)
+    denominator = sigma_p * exp_nu_sigma * exp_lam_k + 1e-6
+    tps_computed = numerator / denominator if denominator > 0 else float("nan")
+
+    ratio_str = "n/d (K_P≈0)"
+    if k_p and abs(k_p) > 1e-9:
+        ratio = sigma_p / k_p
+        ratio_str = f"{ratio:.2f} : 1" if ratio >= 1 else f"1 : {1/ratio:.2f}"
+
+    def _row(label, value, note=""):
+        return html.Div(style={"display": "flex", "justifyContent": "space-between", "padding": "4px 0", "borderBottom": f"1px solid {THEME['border']}"}, children=[
+            html.Span(label, style={"fontSize": "11px", "color": THEME["text_dim"]}),
+            html.Span([value, html.Span(f"  {note}", style={"color": THEME["text_dim"], "fontSize": "9.5px"}) if note else None],
+                      style={"fontSize": "11.5px", "color": THEME["text_white"], "fontFamily": "monospace"}),
+        ])
+
+    return html.Div(style={"padding": "16px", "backgroundColor": THEME["bg_card"], "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}"}, children=[
+        html.Div("PEŁNY ROZKŁAD WZORU TPS (wartości na dziś, przy aktualnych suwakach)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginBottom": "10px"}),
+        _row("μ_P (oczekiwany zwrot portfela)", f"{mu_p*100:+.2f}%"),
+        _row("R_f (stopa wolna od ryzyka / hurdle)", f"{rf*100:.2f}%"),
+        _row("Licznik = μ_P − R_f", f"{numerator*100:+.2f} p.p."),
+        html.Div(style={"height": "8px"}),
+        _row("σ_P (√wᵀΣ_εw, zmienność Estrady)", f"{sigma_p*100:.3f}%"),
+        _row("K_P (√wᵀKw, crash-overlap)", f"{k_p*100:.3f}%"),
+        _row("Stosunek σ_P : K_P", ratio_str, "— relatywna skala obu ryzyk"),
+        html.Div(style={"height": "8px"}),
+        _row("λ (lambda, dziś)", f"{lam:.3f}"),
+        _row("exp(λ·K_P)", f"{exp_lam_k:.4f}", "mnożnik kary za współkrach"),
+        _row("ν (nu, dziś)", f"{nu:.3f}"),
+        _row("exp(ν·σ_P)", f"{exp_nu_sigma:.4f}", "mnożnik czułości na zmienność" + (" (neutralny, ν=0)" if nu == 0 else "")),
+        html.Div(style={"height": "8px"}),
+        _row("Mianownik = σ_P·exp(ν·σ_P)·exp(λ·K_P) + ε", f"{denominator*100:.4f} (×10⁻²)"),
+        html.Div(style={"height": "8px", "borderBottom": f"2px solid {THEME['border_strong']}"}),
+        _row("TPS_P = Licznik / Mianownik", f"{tps_computed:.4f}",
+             ("" if tps_p is None or abs(tps_computed - tps_p) < 1e-6 else f"(solver zwrócił {tps_p:.4f} -- sprawdź spójność)")),
+    ])

@@ -2955,6 +2955,122 @@ this on the real universe and adjust `MATCH_MIN_WINDOWS`/
 `MATCH_MIN_T_STATISTIC` if the resulting eligible set looks too strict or
 too permissive in practice.
 
+### 7u. Rebalance Tab UI Fixes: Dual Fundamental-Save Buttons, Save-Portfolio in Rebalance, 3D Chart Removal (complete)
+
+Confirmed follow-up (2026-09-18), addressed before starting the post-solver pair-overlay work (Etap 7v+): three independent Rebalance-tab UI gaps found during review.
+
+**Stage 3 fundamental inputs — single confirm button split into two.** Previously, `btn-stage3-confirm` both exported to Stage 4 AND was the only path available at all. Confirmed problem: the project owner sometimes wants to feed the solver deliberately experimental/made-up fundamental values (e.g. stress-testing sensitivity to an extreme analyst spread) without polluting `company_store`'s per-ticker history, which is also read by the Research module. Fixed: "CONFIRM & EXPORT (ZAPISZ DO RESEARCH)" now also calls `company_store.append_entry` for every row; "EKSPERYMENTUJ (BEZ ZAPISU)" performs the identical Stage 4 export with zero persistence calls. Verified directly: save-mode data appears via `get_history()` immediately after, experimental-mode leaves the ticker's history empty.
+
+**Rebalance tab was missing a save-portfolio button — found to already exist, just misplaced.** `save_snapshot_callback` and its full backend (`data/snapshot_store.py`) already existed and already read exactly the Stage-4-relevant stores it needed — but its only button lived in the Sandbox tab's layout, not Rebalance's, so saving a just-computed portfolio required switching tabs. Fixed by extending the SAME callback (not duplicating it) to accept a second button (`btn-save-snapshot-stage4`) placed directly in Rebalance, routed via `callback_context` to the correct one of two status Outputs. Verified directly: both trigger paths tested independently, each updating only its own tab's status element.
+
+**Removed the 3D risk-reward scatter (`render_stage4b_3d_surface`, `graph-stage4b-3d`) entirely** — project owner judged it added no diagnostic value beyond the existing results table + donut chart. Removed the callback function itself, not just hidden, to avoid leaving dead code targeting a nonexistent component.
+
+Full app integration recheck (59/59 callbacks — 60 prior minus the one dead 3D-chart callback removed), solver regression rerun (identical weights to every prior check in this project's history, as expected since all three changes are UI-only with zero `engine/` modifications).
+
+---
+
+### 7v. Post-Solver Relative Value Pair Overlay -- "Droga B" (complete)
+
+Confirmed follow-up: wires the Relative Value pair-matching mechanism (Etap 7o+) into the Rebalance solver's output for the first time, without touching the solver itself.
+
+**Design confirmed jointly**: operates strictly AFTER Stage 1/2 finishes, on the solver's own final weight vector -- never touches mu_i, Sigma_eps, K, or the clustering machinery. This sidesteps the cluster-membership question entirely (a matched pair spanning two different clusters is no longer a problem, since clustering has already finished by the time this runs) and avoids the dead end of nudging mu_i, which is provably impotent for any asset already sitting at the binding w_max ceiling.
+
+New engine functions: `compute_current_pair_tilt` (one-shot "today's" tilt, not a backtest), `apply_post_solver_pair_overlay` (full orchestration: filters to positively-weighted tickers, reuses the existing two-stage theta-persistence gate + Maximum Weight Matching unchanged, redistributes weight ONLY within each matched pair's own combined capital). Confirmed default design choice, explicitly flagged as changeable: ADDITIVE on top of whatever asymmetric split the solver's own fundamentals-driven reasoning already produced between the two legs, not a full replacement with a neutral 50/50 baseline. Every leg clipped to [0, w_max] -- the hard concentration ceiling is never breached, confirmed as a deliberate portfolio-level decision this overlay must not override.
+
+Also produces an `unmatched_with_alternative` diagnostic ("Droga B", chosen over "Droga A" -- letting one stock draw signal from multiple overlapping pairs at once, explicitly rejected as reintroducing Cluster-Throttling/Cascading-Dominance-style unbounded interaction complexity): for any positively-weighted stock that ended up without a pair (lost the 1-to-1 matching competition despite Maximum Weight Matching only optimizing total graph weight, not each node's own outcome), surfaces whether it had another qualifying relationship with a different selected stock -- informational only, no automatic action.
+
+New Rebalance-tab panel, deliberately a SEPARATE, explicit step (own button, `background=True`) rather than wired into the fast, live-reactive main solver callback, since the full persistence gate needs ~10 years of independently-fetched data and would make every slider tweak unacceptably slow otherwise. Purely diagnostic at this stage: does not modify `store-stage4b-results` or what SAVE PORTFOLIO persists.
+
+Verified: pair-sum and total-portfolio-sum invariants hold exactly, w_max never breached even when the solver's own split was already asymmetric, unrelated (unpaired) tickers never touched, the additive blend correctly builds on top of (not replaces) the solver's own within-pair asymmetry, blocking-pair diagnostic correctly surfaces an unused qualifying relationship on a constructed 3-stock scenario. Solver regression unchanged. 60/60 callbacks.
+
+---
+
+### 7w. Pair-Overlay Reproducibility Fix, Z-Score Charts, Sandbox Replication with Live Toggle (complete)
+
+Confirmed bug report: identical-looking runs of the Etap 7v overlay (same theta, same portfolio) produced different results between clicks, and theta=0.5 was observed giving a SMALLER weight change than theta=0.3 -- the opposite of the tilt formula's own linear scaling.
+
+**Root cause, isolated and confirmed**: NOT a math bug. Verified directly on fixed, frozen synthetic data, called repeatedly, that the tilt formula is exactly deterministic and scales exactly linearly in theta (0.5/0.3 ratio reproduced to 4 decimal places). The actual cause: every click of the overlay button re-fetched 10 years of price data over the network from scratch, so two "identical" clicks could silently see different underlying data -- a different current Z-score, or even a different matched-pair set if a t-statistic was hovering near the `MATCH_MIN_T_STATISTIC` threshold. Two runs a few minutes apart were never actually comparing the same inputs.
+
+**Fix -- split into an expensive stage and a cheap stage**, since the two-stage theta-persistence gate is itself theta-invariant (t-statistic doesn't depend on theta's value, confirmed from the original theta-scaling proof) and therefore does not need to re-run on a theta change at all:
+- `find_matched_pairs_for_overlay` (expensive): fetch 10Y once, run the gate + matching once, cache the resulting pairs' current Z-scores AND a Z-score history (new `compute_pair_zscore_history`, for charting) -- runs ONLY on an explicit button click.
+- `apply_tilts_to_matched_pairs` (cheap): pure arithmetic on the already-cached Z-scores -- safe to call on every theta keystroke, zero network I/O. Verified directly: 4 different theta values against one cached match-set triggered exactly 1 fetch call, not 4.
+- `apply_post_solver_pair_overlay` kept as a thin backward-compatible wrapper combining both (existing tests/callers unaffected).
+
+**Z-score charts added** (per matched pair, ~2-year rolling context window, current point highlighted) -- addresses the request to visualize each pair's Z-score, and incidentally makes the "which data was this run against" question visually inspectable going forward.
+
+**Replicated in Sandbox**, with one deliberate difference from Rebalance: a `toggle-sandbox-pair-overlay` checkbox that, once the expensive step has been run at least once, makes the tracked "Manual Sandbox" equity curve ITSELF use the pair-overlay-adjusted weights instead of raw solver weights (legend updates to say "+ RV overlay" when active) -- not just a side diagnostic table, since Sandbox's whole purpose is comparing the tracked impact of different choices. Toggle off, or no cache yet, reproduces prior behavior exactly (verified directly on all three states: off, on-without-cache, on-with-cache).
+
+Shared UI builders (`build_pair_zscore_figure`, `build_pair_overlay_output`) moved to `ui/components.py` so Rebalance and Sandbox render identically without a circular import between the two tab modules.
+
+Verified: full `update_forward_tracker` smoke-tested end to end after substantial surgery to its signature (new Output, 3 new Inputs/State) and body (overlay injection point) -- correct output count, correct new-store population, correct legend/curve behavior across all three toggle/cache states. Solver regression unchanged (NVDA=0.35/HPE=0.246/LYC.AX=0.054/AVGO=0.35). 63/63 callbacks.
+
+---
+
+### 7x. Critical Look-Ahead Bias Fix in Sandbox Pair Overlay, w_max-Ceiling Clarity, Two-Curve Comparison (complete)
+
+Confirmed serious bug report from project owner, reviewing a live screenshot: a matched pair (AMAT/AMD, both legs already at 0.15) showed exactly zero weight change regardless of theta, and separately, the project owner flagged that the Sandbox overlay's data fetch could be seeing prices from AFTER a snapshot's creation date -- a direct violation of this project's own walk-forward principle (Part I Section 6.2, "entirely free of look-ahead and survivorship biases").
+
+**Look-ahead bias, confirmed real and fixed.** `find_sandbox_pair_overlay_matches` fetched `period="10y"` ending TODAY unconditionally, with no awareness of which snapshot it was analyzing or when that snapshot was created. Fixed: the callback now reads `record["created_at"]` and truncates the fetched price history to `prices_df.index <= created_at` before any eligibility test, matching, or Z-score computation runs. Verified directly on a controlled scenario (snapshot dated 30 days ago, 10 years of real data available through today): the resulting Z-score history's last date exactly equals the snapshot's creation date, never later, confirming the pair signal is now only ever informed by data that would genuinely have been available on the day the portfolio was frozen. The Rebalance-tab version of the overlay is unaffected -- it has no historical snapshot involved, so "today" genuinely means today there.
+
+**Zero-effect observation, diagnosed and explained, not silently left as confusing.** Re-verified the tilt math is still exactly deterministic and linear in theta on frozen data (unchanged from Etap 7w). The specific screenshot's zero change was mathematically correct: both legs of the AMAT/AMD pair were already sitting exactly at `w_max`, so `combined = 2*w_max` leaves literally zero room to tilt without breaching the per-leg ceiling -- confirmed by reproducing the exact scenario (`w_max=0.15` gives 0.0000 change, `w_max=0.30` gives a real, non-zero tilt on identical inputs). Added an explicit on-screen note naming this condition whenever both legs of a matched pair sit at the ceiling, instead of an unexplained zero. Also added explicit 4-decimal numeric formatting to the weights table, since the project owner could not tell from the unformatted display whether small real changes were occurring at all.
+
+**New per-pair chart**: weight-share-over-time (`build_pair_weight_history_figure`), derived entirely from the Z-score history already cached for the existing Z-score chart, transformed through the current theta -- zero additional data cost, directly answers "how would this pair's split have evolved over time," which is what the project owner was asking for when comparing this feature to the Relative Value module's own historical weight-evolution view.
+
+**Sandbox comparison redesigned**: the overlay toggle no longer replaces the "Manual Sandbox" curve in place (which silently hid the baseline for comparison) -- it now adds a second, separate "Manual Sandbox + RV overlay" curve alongside the untouched original, so both are visible and directly comparable on one chart. Verified the base curve is provably unmodified when the overlay is added.
+
+**Explicitly deferred, not done in this pass**: the project owner also asked for the full network-graph + heatmap-matrix visualization (matching Tab 1's `run_pair_matching_analysis` panel) inside this overlay. Given the scope of the fixes above was already substantial and safety-critical, this was intentionally left for a following, separate pass rather than rushed alongside a correctness fix -- flagged back to the project owner for confirmation before starting it.
+
+Solver regression unchanged (NVDA=0.35/HPE=0.246/LYC.AX=0.054/AVGO=0.35). 63/63 callbacks.
+
+---
+
+### 7y. Tilt Formula Reversal to Multiplicative-Rescale, w_max Dropped Entirely, Network Graph/Matrix + t-statistics Added (complete)
+
+Confirmed follow-up: the project owner walked through a hand-verified numeric example showing the Etap 7v/7w additive formula was too muted -- a strong pair signal could never meaningfully overpower what the solver had already decided.
+
+**Formula reversal, confirmed with a worked example.** Old: `share_solver + delta_from_theta*tanh(-Z)`, clipped to `[0, w_max]`. New, matched to the project owner's own hand calculation to 4 decimal places (A=0.15, B=0.10, overlay share_A=0.3 -> final A=0.0978, B=0.1522): `share_A_overlay = 0.5+0.5*theta*tanh(-Z)`; `raw_A = weight_A_solver*share_A_overlay`, `raw_B` symmetric; `scale = (weight_A_solver+weight_B_solver)/(raw_A+raw_B)`; `final = raw*scale`. Sanity-verified: at Z=0 this reduces exactly to the original solver weights for any theta -- no signal, no change.
+
+**`w_max` now completely ignored by this overlay** -- explicit, deliberate reversal of the earlier w_max-respecting design, confirmed directly by the project owner ("wmax dla nakładki nie ma znaczenia, ona ma go ignorować i mieć swoją mechanikę"). Verified an extreme Z-score can now push a pair's concentration well past what w_max would have allowed under the old formula -- a real, consciously-accepted tradeoff, flagged clearly rather than silently applied. This also retroactively explains a screenshot the project owner sent showing exactly zero effect on a matched pair (AMAT/AMD): under the OLD formula, both legs were already sitting exactly at w_max, leaving mathematically zero room to tilt without breaching it -- moot now, but confirmed as the correct diagnosis before the formula was replaced.
+
+**t-statistic surfaced end-to-end** -- was being computed (it's literally the Maximum Weight Matching edge weight already) but discarded before reaching the UI. Now captured into `matched_pairs_info` and shown in each pair's chart title and the status line.
+
+**Network graph + t-statistic heatmap matrix added** to the pair-overlay panel in both Rebalance and Sandbox, matching Tab 1's `run_pair_matching_analysis` three-tier visualization (selected/eligible-but-not-selected/qualifies-only) exactly -- extracted as a new shared `build_pair_network_and_matrix` in `ui/components.py`. Required exposing the full qualifying/eligible tiers (not just the final matched set) from `find_matched_pairs_for_overlay`.
+
+Verified: new formula matches the hand calculation to 4 decimal places; neutral-signal sanity check across multiple theta values; total portfolio weight sum still exactly preserved despite `w_max` no longer being enforced; network/matrix section renders correctly on a 5-ticker synthetic scenario (2 pairs matched of 6 qualifying, 4 eligible), with real t-statistics displayed throughout. Solver regression unchanged. 63/63 callbacks.
+
+---
+
+### 7z. Nu (Volatility-Sensitivity) Parameter + Full TPS Formula Breakdown Panel (complete)
+
+Confirmed follow-up, returning to the sensitivity-tooling roadmap deferred while the Relative Value pair overlay was being built: step 1 of that roadmap (add `nu`) plus a new, explicitly requested visibility feature.
+
+**`nu` added**, structurally parallel to the existing `lambda`: `TPS(w) = (w·mu - Rf) / (sigma_p*exp(nu*sigma_p)*exp(lam*k_p) + eps)` -- an additional exponential multiplier on the portfolio's OWN downside-volatility term (`sigma_p`), separate from `lambda`'s multiplier on the crash-overlap term (`k_p`). Threaded through the entire solver chain (`_tps_neg` -> Stage 1 -> Stage 2 -> `run_true_two_stage_optimization` -> `_run_single_pass` -> `run_optimization_with_singleton_split`), default `nu=0.0` everywhere for exact backward compatibility. Confirmed allowed negative (rewarding volatility instead of only penalizing it, per Part I's own thesis that hyper-growth volatility is often upside-skewed alpha). Verified: solver regression unchanged at `nu=0.0`; nonzero `nu` (both signs) measurably moves the allocation on a controlled synthetic test. Wired live into both Tab 4 (auto-generated via `STAGE4A_PARAMS_CONFIG`) and Sandbox (new `slider-sb-nu`).
+
+**Full formula breakdown panel added**, addressing a explicit gap the project owner flagged ("widzę tylko suwaki... chcę widzieć np. czy zmienność wynosi w stosunku do K to jest jakieś 1:8"): a new shared `build_tps_formula_breakdown` (`ui/components.py`) shows every term of the TPS formula with its actually-computed value -- `mu_P`, `Rf`, the numerator, `sigma_P`, `K_P`, the explicitly requested `sigma_P:K_P` ratio, `lambda`, `exp(lambda*K_P)`, `nu`, `exp(nu*sigma_P)`, the full denominator, and `TPS_P` (cross-checked against the solver's own reported value as a consistency guard). Rendered in both Rebalance (`stage4b-formula-breakdown`) and Sandbox (`sandbox-formula-breakdown`), fed from values the solver already returns (`lam_used`/`nu_used`/`rf_used` newly exposed alongside the existing `mu_p`/`delta_p`/`k_penalty_p`/`tps_p`) -- no duplicate computation anywhere.
+
+Verified end to end: Tab 4's panel renders correctly with real values at `nu=2.0` (weights measurably shifted vs the `nu=0` baseline); Sandbox's panel renders correctly at a feasible `w_max`, and gracefully shows a "not yet computed" placeholder rather than crashing when the solver falls back to equal-weight on an infeasible parameter combination (confirmed this is the existing, correct fallback behavior, not a new bug, after a first test run used an infeasible `w_max` for a 2-ticker portfolio by the tester's own mistake). Solver regression unchanged. 63/63 callbacks.
+
+**Explicitly raised but not yet resolved**: the project owner's separate idea of extracting analyst-uncertainty discounting so it no longer affects the ranking value fed to the optimizer while still discounting "expected return" somewhere -- flagged as ambiguous between two structurally different designs (a binary pass/fail quality gate vs. a discount applied to a specific sub-component like `U_adj` only) and, in the gate interpretation, a real risk of worsening the exact NBIX-style adverse-selection failure mode from the earlier rolled-back attempt (Etap: F-matrix-in-denominator) rather than fixing it, since a raw undiscounted ranking value would no longer have any continuous penalty at all once a low bar like `Rf` is cleared. Awaiting the project owner's clarification before any implementation.
+
+---
+
+### 8a. mu_i Gamma Discount Made Universal Across Alpha (resolves the analyst-uncertainty open question from Etap 7z) (complete)
+
+Confirmed follow-up: resolves the open question flagged at the end of Etap 7z. The project owner clarified their idea by describing a concrete symptom observed while sliding `alpha` in the real universe: at low `alpha`, the gamma dispersion discount was so aggressive that as few as ~4 stocks cleared a 25% `Rf` hurdle; at `alpha=1.0`, the discount vanished entirely (by the old design's own stated intent -- gamma was coupled only to the price-target branch, which has zero weight at alpha=1.0), letting through wide-analyst-dispersion, low-forecast-quality names (the project owner's own examples: ARGX, NBIX) purely because nothing was left to discount them.
+
+**Confirmed fix**: `gamma`'s discount (`D_i = exp(-gamma*S_i)`) moved from being coupled to the `(1-alpha)` branch specifically to applying universally to the whole composite return, exactly like `M_i` (revision momentum) and `A_i` (coverage confidence) already do:
+```
+BaseReturn_i = (1-alpha)*U_raw_i + alpha*G_val_i     # pure weighted average now, no discount inside
+mu_i = BaseReturn_i * M_i * A_i * exp(-gamma*S_i)     # D_i now alpha-independent
+```
+This is an explicit, conscious reversal of the design confirmed back when the Alpha Blend was first introduced (Etap 2) -- at the time, applying gamma at `alpha=1.0` was considered wrong because `S_i` is nominally a price-target-specific dispersion measure with "nothing to discount" once that branch has zero weight. The project owner's own reasoning for reversing this: there is no OTHER available signal specifically measuring the reliability of the EPS-growth estimate itself, so repurposing `S_i` as a general forecast-uncertainty proxy for the WHOLE estimate -- not the price-target branch alone -- is preferable to leaving pure-EPS-growth valuations (`alpha=1.0`) completely undiscounted.
+
+Verified on two constructed example companies (tight-dispersion "AcmeAI" vs wide-dispersion "BetaSemi", same fixed `gamma=1.5`, `kappa=1.0`, `n_ref=8`): `D_i` is now identical (0.558 and 0.120 respectively) across every `alpha` value 0.0/0.3/0.5/1.0 tested for a given company -- confirming the discount is now genuinely alpha-independent. At `alpha=1.0` specifically (where the old formula gave `D_i=1.0`, i.e. no discount at all), BetaSemi's wide dispersion now correctly cuts its 20% raw EPS growth down to 1.10% `mu_i`, against AcmeAI's 25.45% -- closing exactly the asymmetry the project owner identified.
+
+Solver regression: NVDA/AVGO unchanged (still pinned at `w_max` on this fixture), HPE 0.246->0.2463, LYC.AX 0.054->0.0537 -- a small shift on this fixture's specific, moderate `S_i` values (0.13-0.44 across the four test tickers); the dramatic correction is specifically at high-`alpha`/high-`S_i` combinations (like the project owner's real ARGX/NBIX case) that this particular fixture does not exercise. New baseline shown to the project owner; **not yet confirmed** as the new reference value to encode in `CLAUDE.md` as of this entry -- per the project's own standing protocol, the old baseline stays authoritative until explicit confirmation arrives.
+
+`engine/single_asset.py`'s own, structurally different alpha/gamma/kappa/eta model (Research/Company Dossier's per-horizon calibration) is untouched -- confirmed, as before, to be a fully independent model that never calls `compute_composite_upside_row`.
+
 ---
 
 ## 8. Implementation Status & Development Roadmap

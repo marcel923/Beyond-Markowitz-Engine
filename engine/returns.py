@@ -35,12 +35,15 @@ DEFAULT_ALPHA = 0.5  # backward-compat default for snapshots saved before Etap 2
 
 def compute_composite_upside_row(row, gamma, kappa, n_ref, alpha=DEFAULT_ALPHA):
     """
-    Composite Forward Upside (mu_i) -- Section 4.2, Alpha Blend (Etap 2).
+    Composite Forward Upside (mu_i) -- Section 4.2, Alpha Blend (Etap 2),
+    REVISED 2026-09-19 (confirmed reversal of the earlier "gamma drops out
+    at alpha=1.0" design, on explicit instruction from the project owner):
 
-        BaseReturn_i = (1 - alpha) * U_raw_i * exp(-gamma * S_i)  +  alpha * G_val_i
+        BaseReturn_i = (1 - alpha) * U_raw_i  +  alpha * G_val_i     [pure weighted average, no discount here]
         M_i          = 1 + kappa * Rev_val_i
         A_i          = 1 - exp(-N_i / N_ref)
-        mu_i         = BaseReturn_i * M_i * A_i
+        D_i          = exp(-gamma * S_i)                              [NEW: universal dispersion discount]
+        mu_i         = BaseReturn_i * M_i * A_i * D_i
 
     where:
         U_raw_i   = (T_i - P0_i) / P0_i          [target-price upside]
@@ -53,43 +56,51 @@ def compute_composite_upside_row(row, gamma, kappa, n_ref, alpha=DEFAULT_ALPHA):
         Rev_val_i = Rev_90d_i / 100.0            [90d EPS revision, same whole-percent
                                                    entry convention as G_2Y_i]
 
+    CONFIRMED DESIGN REVERSAL (2026-09-19): the PREVIOUS version coupled the
+    gamma dispersion penalty to the (1-alpha) branch specifically, so it
+    dropped out ENTIRELY at alpha=1.0 (pure EPS growth) -- the stated reasoning
+    at the time was that S_i is a property of analyst PRICE TARGETS
+    specifically, so it has "nothing to discount" once that branch has zero
+    weight. The project owner identified a genuine, undesired consequence of
+    this in practice: sliding alpha toward 0 heavily discounts the upside (so
+    much that, at low alpha, as few as ~4 stocks in a real universe cleared
+    an 25% Rf hurdle after discounting) while alpha=1.0 applied almost NO
+    discount at all, letting through wide-dispersion, low-forecast-quality
+    names (e.g. ARGX, NBIX in the project owner's own real universe) purely
+    because gamma had nothing left to act on. Confirmed reasoning for the fix:
+    there is no OTHER available signal specifically measuring the reliability
+    of the EPS-growth estimate itself, so S_i (analyst price-target dispersion)
+    is repurposed as a general forecast-uncertainty proxy applied to the WHOLE
+    composite estimate, exactly like M_i and A_i already are -- not just to
+    the price-target branch. This is a conscious, explicit choice to
+    discount EPS growth by a price-target-derived signal for lack of a more
+    specific one, not an oversight.
+
     `alpha` in [0, 1] is the Growth/Upside Blend parameter (confirmed design,
     2026-09-06 conversation):
-        alpha = 0.0 -> pure analyst target-price consensus (U_raw, discounted
-                       by the gamma dispersion penalty)
-        alpha = 0.5 -> equal blend of the two branches (but see DEFAULT_ALPHA's note
-                       above: this does not numerically reproduce the pre-Etap-2
-                       formula, since M_i/A_i's scope also changed independent of alpha)
-        alpha = 1.0 -> pure fundamental EPS growth (G_val). The gamma dispersion
-                       penalty drops out ENTIRELY at alpha=1.0, by design: gamma
-                       is coupled to the (1-alpha) branch because S_i is a
-                       property of analyst PRICE TARGETS specifically, not of
-                       EPS growth estimates, so it has nothing to discount once
-                       the target-price branch has zero weight. (This coupling
-                       -- not full independence -- is what fixed an early
-                       version of this formula where gamma penalized the
-                       result even at alpha=1.0, contradicting "ignore analyst
-                       targets entirely".)
+        alpha = 0.0 -> pure analyst target-price consensus (U_raw)
+        alpha = 0.5 -> equal blend of the two branches
+        alpha = 1.0 -> pure fundamental EPS growth (G_val)
+        In EVERY case, the result is now discounted by D_i = exp(-gamma*S_i),
+        M_i, and A_i identically -- gamma no longer varies in effect with alpha.
         Values outside [0, 1] are clipped -- a defensive guard against a
         stray out-of-range value reaching here from a UI slider or an old/
         malformed snapshot JSON, not an expected code path.
 
     A_i (analyst coverage confidence) discounts the WHOLE bracket regardless
-    of alpha -- confirmed design, NOT coupled to (1-alpha) the way gamma is:
-    coverage depth is treated as a general signal of forecast QUALITY (a
-    thinly-covered stock's EPS growth consensus is just as suspect as its
-    price-target consensus), not specifically a property of the target-price
-    branch, so it still discounts a pure EPS-growth (alpha=1.0) estimate.
+    of alpha, unchanged from before -- coverage depth is treated as a general
+    signal of forecast QUALITY, not specifically a property of the
+    target-price branch.
 
     Divide-by-zero guards: P0<=0 -> U_raw=0; T_i==0 -> S_i=0; N_ref<=0 -> A_i=0.
 
     Returns
     -------
     dict with keys:
-        "U_raw", "S_i", "G_val", "Rev_val", "M_i", "A_i" : the intermediate terms above
-        "U_component" : (1-alpha) * U_raw * exp(-gamma*S_i)  -- target-price contribution to BaseReturn_i
-        "G_component" : alpha * G_val                         -- EPS-growth contribution to BaseReturn_i
-        "base_return" : U_component + G_component (pre-M_i/A_i)
+        "U_raw", "S_i", "G_val", "Rev_val", "M_i", "A_i", "D_i" : the intermediate terms above
+        "U_component" : (1-alpha) * U_raw          -- target-price contribution to BaseReturn_i (pre-discount)
+        "G_component" : alpha * G_val               -- EPS-growth contribution to BaseReturn_i (pre-discount)
+        "base_return" : U_component + G_component (pre-M_i/A_i/D_i)
         "alpha"       : the (clipped) alpha actually used
         "mu_i"        : the final composite upside
     """
@@ -109,18 +120,19 @@ def compute_composite_upside_row(row, gamma, kappa, n_ref, alpha=DEFAULT_ALPHA):
     G_val = G2Y_pct / 100.0
     Rev_val = Rev_pct / 100.0
 
-    U_component = (1.0 - alpha) * U_raw * np.exp(-gamma * S_i)
+    U_component = (1.0 - alpha) * U_raw
     G_component = alpha * G_val
     base_return = U_component + G_component
 
     M_i = 1.0 + kappa * Rev_val
     A_i = (1.0 - np.exp(-Ni / n_ref)) if n_ref > 0 else 0.0
+    D_i = np.exp(-gamma * S_i)
 
-    mu_i = base_return * M_i * A_i
+    mu_i = base_return * M_i * A_i * D_i
 
     return {
         "U_raw": float(U_raw), "S_i": float(S_i), "G_val": float(G_val), "Rev_val": float(Rev_val),
-        "M_i": float(M_i), "A_i": float(A_i),
+        "M_i": float(M_i), "A_i": float(A_i), "D_i": float(D_i),
         "U_component": float(U_component), "G_component": float(G_component),
         "base_return": float(base_return), "alpha": float(alpha), "mu_i": float(mu_i),
     }

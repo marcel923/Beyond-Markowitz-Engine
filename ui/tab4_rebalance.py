@@ -25,13 +25,15 @@ from dash.dependencies import Input, Output, State
 
 from ui.app_instance import app
 from ui.theme import THEME, CLUSTER_PALETTE
-from ui.components import build_kpi_card, build_kpi_strip, STAGE4A_PARAMS_CONFIG
+from ui.components import build_kpi_card, build_kpi_strip, STAGE4A_PARAMS_CONFIG, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule, build_pair_overlay_output, build_tps_formula_breakdown
 from ui.tab3_tailrisk import compute_tail_penalty
 from engine.risk import compute_estrada_matrix, semideviation_ann_from_matrix
 from engine.optimizer import compute_asset_tps, run_stage2_inter_cluster_slsqp, run_optimization_with_singleton_split
 from engine.evaluation import evaluate_portfolio_performance
 from engine.returns import compute_composite_upside_row
+from engine.pairs import find_matched_pairs_for_overlay, apply_tilts_to_matched_pairs
 from data import snapshot_store as snap
+from data.market_data import fetch_universe_prices
 
 @app.callback(Output("panel-stage4a-container", "style"), Input("store-stage3-final-payload", "data"), prevent_initial_call=True)
 def reveal_stage4a_panel(payload):
@@ -50,13 +52,13 @@ def reveal_stage4b_panel(payload):
 @app.callback(
     Output("store-stage4b-results", "data"),
     Input("input-alpha", "value"),
-    Input("input-lambda", "value"), Input("input-gamma", "value"), Input("input-kappa", "value"), Input("input-nref", "value"),
+    Input("input-lambda", "value"), Input("input-nu", "value"), Input("input-gamma", "value"), Input("input-kappa", "value"), Input("input-nref", "value"),
     Input("input-wmax", "value"), Input("input-rf", "value"),
     Input("store-stage3-final-payload", "data"), Input("store-stage4a-tailrisk", "data"), Input("store-crash-matrices", "data"),
     State("store-daily-returns", "data"), State("store-raw-close", "data"),
     prevent_initial_call=True
 )
-def run_stage4b_solver(alpha, lam, gamma, kappa, n_ref, w_max, rf,
+def run_stage4b_solver(alpha, lam, nu, gamma, kappa, n_ref, w_max, rf,
                         stage3_payload, tailrisk, crash_data, daily_returns_data, raw_close_data):
     """
     Silnik Stage 4B — True Two-Stage SLSQP (Section 3.4) + Dynamic Singleton Split.
@@ -115,7 +117,7 @@ def run_stage4b_solver(alpha, lam, gamma, kappa, n_ref, w_max, rf,
             clusters_dict.setdefault(ck, []).append(t)
 
         try:
-            split_result = run_optimization_with_singleton_split(mu_vec, sigma_full, k_full, clusters_dict, lam, w_max=w_max, Rf=rf)
+            split_result = run_optimization_with_singleton_split(mu_vec, sigma_full, k_full, clusters_dict, lam, w_max=w_max, Rf=rf, nu=(nu if isinstance(nu, (int, float)) else 0.0))
         except (ValueError, RuntimeError) as e:
             return {"error": f"SLSQP (True Two-Stage + Singleton Split): {str(e)}"}
 
@@ -166,6 +168,7 @@ def run_stage4b_solver(alpha, lam, gamma, kappa, n_ref, w_max, rf,
             "delta_ann_map": delta_ann_map.to_dict(),
             "cluster_of": cluster_of,
             "mu_p": final["mu_p"], "delta_p": final["delta_p"], "k_penalty_p": final["k_penalty_p"], "tps_p": final["tps_p"],
+            "lam_used": lam, "nu_used": (nu if isinstance(nu, (int, float)) else 0.0), "rf_used": rf,
             "cdd_p": eval_opt["cdd_quantile"],
             "solver_success": final["success"], "solver_message": final["message"],
             "w_max_used": w_max,
@@ -182,6 +185,7 @@ def run_stage4b_solver(alpha, lam, gamma, kappa, n_ref, w_max, rf,
 @app.callback(
     Output("stage4b-error-banner", "children"), Output("stage4b-kpi-row", "children"),
     Output("table-stage4b-weights", "data"), Output("graph-stage4b-donut", "figure"),
+    Output("stage4b-formula-breakdown", "children"),
     Input("store-stage4b-results", "data"),
     prevent_initial_call=True
 )
@@ -193,7 +197,7 @@ def render_stage4b_results(results):
         msg = results.get("error") if results else "Brak danych."
         banner = html.Div(f"{msg}", style={"color": THEME["orange"], "fontWeight": "bold", "padding": "16px",
                                               "backgroundColor": THEME["bg_input"], "borderRadius": "12px", "marginBottom": "25px"})
-        return banner, [], [], empty_fig
+        return banner, [], [], empty_fig, html.Div()
 
     tickers = results["tickers"]
     weights, g_map, tps_map, cluster_of = results["weights"], results["g"], results["asset_tps"], results["cluster_of"]
@@ -245,7 +249,14 @@ def render_stage4b_results(results):
         showlegend=False, margin=dict(l=10, r=10, t=10, b=10), font_family=THEME["font"]
     )
 
-    return banner, kpi_cards, table_rows, donut_fig
+    formula_breakdown = build_tps_formula_breakdown(
+        mu_p=results.get("mu_p"), rf=results.get("rf_used", 0.045),
+        sigma_p=results.get("delta_p"), k_p=results.get("k_penalty_p"),
+        lam=results.get("lam_used", 0.0), nu=results.get("nu_used", 0.0),
+        tps_p=results.get("tps_p"),
+    )
+
+    return banner, kpi_cards, table_rows, donut_fig, formula_breakdown
 
 
 @app.callback(
@@ -416,3 +427,88 @@ def validate_param_badges(*values):
         children_out.append(label)
         style_out.append(style)
     return children_out + style_out
+
+# ---------------------------------------------------------------------------
+# Relative Value -- nakladka po optymalizacji (2026-09-18, "Droga B",
+# nastepnie 2026-09-18 naprawa powtarzalnosci + wykresy Z-score).
+# Wylacznie diagnostyczna: NIE zmienia store-stage4b-results, NIE wplywa
+# na to, co zapisze SAVE PORTFOLIO. Dziala WYLACZNIE na juz-policzonym,
+# koncowym wektorze wag solvera.
+#
+# DWUETAPOWA architektura (naprawa zaobserwowanej niepowtarzalnosci wynikow
+# miedzy klikanieciami -- kazde klikniecie robilo NOWE zapytanie sieciowe
+# o 10 lat cen, wiec dwa "identyczne" uruchomienia moglo cicho dostac inne
+# dane pod spodem, myloen z bledem w matematyce przechylenia, ktora
+# faktycznie jest poprawna i deterministyczna -- zweryfikowane bezposrednio):
+#   Etap A (drogi, btn-run-pair-overlay, background=True): pobiera 10Y RAZ,
+#     uruchamia dwuetapowy test trwalosci + Maximum Weight Matching, cachuje
+#     WYNIK (ktore pary, ich aktualny Z-score, historia Z-score do wykresu)
+#     w store-pair-overlay-match-cache. Dobor par jest theta-niezmienniczy
+#     (t-statystyka mechanizmu theta nie zalezy od thety), wiec ten etap
+#     NIE musi sie powtarzac przy samej zmianie thety.
+#   Etap B (tani, reaguje na zmiane theta LUB na nowy wynik Etapu A): czyta
+#     cache, stosuje wzor przechylenia z aktualna theta, renderuje tabele +
+#     wykresy Z-score. Zero pobierania danych, natychmiastowe.
+# ---------------------------------------------------------------------------
+
+def _build_pair_overlay_output(weights, match_cache, theta, w_max):
+    return build_pair_overlay_output(weights, match_cache, theta, w_max, apply_tilts_to_matched_pairs)
+
+
+@app.callback(
+    Output("store-pair-overlay-match-cache", "data"), Output("pair-overlay-status", "children", allow_duplicate=True),
+    Input("btn-run-pair-overlay", "n_clicks"),
+    State("input-overlay-theta", "value"), State("store-stage4b-results", "data"),
+    background=True, progress=[Output("pair-overlay-status", "children", allow_duplicate=True)],
+    prevent_initial_call=True,
+)
+def find_pair_overlay_matches(set_progress, _n_clicks, theta, stage4b_results):
+    """Etap A (drogi) -- patrz komentarz modulu powyzej. Wykonuje sie TYLKO
+    na klikniecie przycisku, NIGDY na sama zmiane thety."""
+    theta = theta or 0.15
+
+    if not stage4b_results or stage4b_results.get("error"):
+        return dash.no_update, html.Div("Brak poprawnych wyników solvera -- uruchom optymalizację powyżej.", style={"color": THEME["orange"]})
+
+    weights = stage4b_results["weights"]
+    selected_tickers = [t for t, w in weights.items() if w and w > 1e-9]
+    if len(selected_tickers) < 2:
+        return dash.no_update, html.Div("Za mało spółek z dodatnią wagą do sprawdzenia par.", style={"color": THEME["orange"]})
+
+    set_progress([f"Pobieram niezależnie 10 lat historii cen dla {len(selected_tickers)} wybranych spółek..."])
+    prices_df, valid_tickers = fetch_universe_prices(selected_tickers, period="10y")
+    if prices_df.empty or len(valid_tickers) < 2:
+        return dash.no_update, html.Div("Nie udało się pobrać wystarczająco długiej (10-letniej) historii cenowej.", style={"color": THEME["orange"]})
+
+    def _report_progress(label, i, total):
+        if label == "Etap 1: tanie sito":
+            set_progress([f"Tanie sito theta (kanonizacja): kombinacja {i}/{total}..."])
+        else:
+            set_progress([f"Pełny test trwałości ({label}): para {i}/{total}..."])
+
+    set_progress([f"Sprawdzam pary wśród {len(valid_tickers)} spółek z dodatnią wagą..."])
+    match_data = find_matched_pairs_for_overlay(weights, prices_df, theta=theta, on_progress=_report_progress)
+    status = html.Div(
+        f"Dobór par zakończony -- {match_data['n_selected']} spółek, {match_data['n_qualifying']} par kwalifikujących się, "
+        f"{match_data['n_eligible']} dopuszczalnych, {len(match_data['matched_pairs_info'])} dopasowanych. "
+        f"Teraz możesz dowolnie zmieniać THETA bez ponownego pobierania danych.",
+        style={"color": THEME["accent"]}
+    )
+    return match_data, status
+
+
+@app.callback(
+    Output("pair-overlay-results", "children"), Output("pair-overlay-status", "children", allow_duplicate=True),
+    Input("store-pair-overlay-match-cache", "data"), Input("input-overlay-theta", "value"),
+    State("store-stage4b-results", "data"), State("input-wmax", "value"),
+    prevent_initial_call=True,
+)
+def render_pair_overlay_tilts(match_cache, theta, stage4b_results, w_max):
+    """Etap B (tani) -- reaguje na kazda zmiane thety LUB na swiezy wynik
+    Etapu A, zero pobierania danych. Patrz komentarz modulu powyzej."""
+    theta = theta or 0.15
+    w_max = w_max if isinstance(w_max, (int, float)) and w_max > 0 else 0.30
+    if not stage4b_results or stage4b_results.get("error"):
+        return dash.no_update, dash.no_update
+    weights = stage4b_results["weights"]
+    return _build_pair_overlay_output(weights, match_cache, theta, w_max)

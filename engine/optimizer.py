@@ -101,12 +101,25 @@ def _quad_form_sqrt(w: np.ndarray, M: np.ndarray) -> float:
     return float(np.sqrt(max(float(w @ M @ w), 0.0)))
 
 
-def _tps_neg(w: np.ndarray, mu_arr: np.ndarray, sigma_arr: np.ndarray, k_arr: np.ndarray, lam: float, Rf: float) -> float:
-    """Shared objective for BOTH stages: -TPS(w) (scipy minimizes -> maximizes TPS)."""
+def _tps_neg(w: np.ndarray, mu_arr: np.ndarray, sigma_arr: np.ndarray, k_arr: np.ndarray, lam: float, Rf: float, nu: float = 0.0) -> float:
+    """
+    Shared objective for BOTH stages: -TPS(w) (scipy minimizes -> maximizes TPS).
+
+    `nu` (confirmed 2026-09-19, new sensitivity parameter): exponential
+    multiplier on the portfolio's OWN downside-volatility term (sigma_p),
+    parallel in structure to how `lam` already scales the crash-overlap
+    term (k_p) -- but nu targets Sigma_eps, not K. At nu=0, exp(0)=1 and
+    the formula is byte-identical to the pre-nu version (confirmed
+    backward-compatible default). nu>0 makes the solver MORE volatility-averse
+    than the base Sortino-style sqrt(sigma_p) term alone already implies;
+    nu<0 REWARDS volatility instead of penalizing it further -- deliberately
+    allowed negative, per Part I's own thesis that volatility in a
+    hyper-growth regime is often upside-skewed alpha, not pure risk.
+    """
     mu_p = float(w @ mu_arr)
     sigma_p = _quad_form_sqrt(w, sigma_arr)
     k_p = _quad_form_sqrt(w, k_arr)
-    tps = (mu_p - Rf) / (sigma_p * np.exp(lam * k_p) + EPSILON)
+    tps = (mu_p - Rf) / (sigma_p * np.exp(nu * sigma_p) * np.exp(lam * k_p) + EPSILON)
     return -tps
 
 
@@ -118,6 +131,7 @@ def run_stage1_intra_cluster_slsqp(
     lam: float,
     Rf: float = 0.045,
     maxiter: int = 300,
+    nu: float = 0.0,
 ) -> Dict[str, object]:
     """
     Section 3.4, Stage 1 (Intra-Cluster SLSQP).
@@ -188,7 +202,7 @@ def run_stage1_intra_cluster_slsqp(
             bounds = [(0.0, 1.0) for _ in range(n)]
             constraints = [{"type": "eq", "fun": lambda g: np.sum(g) - 1.0}]
             result = minimize(
-                _tps_neg, x0, args=(mu_arr, sigma_arr, k_arr, lam, Rf),
+                _tps_neg, x0, args=(mu_arr, sigma_arr, k_arr, lam, Rf, nu),
                 method="SLSQP", bounds=bounds, constraints=constraints,
                 options={"maxiter": maxiter, "ftol": 1e-10},
             )
@@ -201,7 +215,7 @@ def run_stage1_intra_cluster_slsqp(
         cluster_mu[ck] = float(g_opt @ mu_arr)
         cluster_sigma[ck] = _quad_form_sqrt(g_opt, sigma_arr)
         cluster_kpen[ck] = _quad_form_sqrt(g_opt, k_arr)
-        cluster_tps[ck] = (cluster_mu[ck] - Rf) / (cluster_sigma[ck] * np.exp(lam * cluster_kpen[ck]) + EPSILON)
+        cluster_tps[ck] = (cluster_mu[ck] - Rf) / (cluster_sigma[ck] * np.exp(nu * cluster_sigma[ck]) * np.exp(lam * cluster_kpen[ck]) + EPSILON)
         cluster_success[ck] = success
         cluster_message[ck] = message
 
@@ -226,6 +240,7 @@ def run_stage2_inter_cluster_slsqp(
     w_max: float = 0.20,
     Rf: float = 0.045,
     maxiter: int = 300,
+    nu: float = 0.0,
 ) -> Dict[str, object]:
     """
     Section 3.4, Stage 2 (Inter-Cluster SLSQP).
@@ -325,7 +340,7 @@ def run_stage2_inter_cluster_slsqp(
 
     def objective(W):
         w_final = g_full_arr * W[cluster_idx_arr]
-        return _tps_neg(w_final, mu_arr, sigma_arr, k_arr, lam, Rf)
+        return _tps_neg(w_final, mu_arr, sigma_arr, k_arr, lam, Rf, nu)
 
     result = minimize(
         objective, x0, method="SLSQP", bounds=bounds, constraints=constraints,
@@ -345,7 +360,7 @@ def run_stage2_inter_cluster_slsqp(
     mu_p = float(w_final_arr @ mu_arr)
     delta_p = _quad_form_sqrt(w_final_arr, sigma_arr)
     k_p = _quad_form_sqrt(w_final_arr, k_arr)
-    tps_p = (mu_p - Rf) / (delta_p * np.exp(lam * k_p) + EPSILON)
+    tps_p = (mu_p - Rf) / (delta_p * np.exp(nu * delta_p) * np.exp(lam * k_p) + EPSILON)
 
     return {
         "weights": weights,
@@ -368,6 +383,7 @@ def run_true_two_stage_optimization(
     w_max: float = 0.20,
     Rf: float = 0.045,
     maxiter: int = 300,
+    nu: float = 0.0,
 ) -> Dict[str, object]:
     """
     Single entry point: Stage 1 -> Stage 2 (Section 3.4). Shared by the main
@@ -384,8 +400,8 @@ def run_true_two_stage_optimization(
         "success", "message" : Stage 2 solver convergence flag/message
         "mu_p", "delta_p", "k_penalty_p", "tps_p" : Stage 2 portfolio-level metrics at the optimum
     """
-    stage1 = run_stage1_intra_cluster_slsqp(mu_vec, sigma_eps, K_matrix, clusters_dict, lam, Rf=Rf, maxiter=maxiter)
-    stage2 = run_stage2_inter_cluster_slsqp(mu_vec, sigma_eps, K_matrix, clusters_dict, stage1["g"], lam, w_max=w_max, Rf=Rf, maxiter=maxiter)
+    stage1 = run_stage1_intra_cluster_slsqp(mu_vec, sigma_eps, K_matrix, clusters_dict, lam, Rf=Rf, maxiter=maxiter, nu=nu)
+    stage2 = run_stage2_inter_cluster_slsqp(mu_vec, sigma_eps, K_matrix, clusters_dict, stage1["g"], lam, w_max=w_max, Rf=Rf, maxiter=maxiter, nu=nu)
 
     return {
         "weights": stage2["weights"],
@@ -521,17 +537,17 @@ def _build_split_clusters(clusters_dict: Dict[object, List[str]], dominant_ticke
     return new_clusters
 
 
-def _run_single_pass(mu_vec, sigma_eps, K_matrix, clusters_dict, lam, w_max, Rf, maxiter):
+def _run_single_pass(mu_vec, sigma_eps, K_matrix, clusters_dict, lam, w_max, Rf, maxiter, nu=0.0):
     """
     One Stage1+Stage2 attempt, normalizing both outcomes (feasible / infeasible)
     into the same dict shape so the history log and the detection step don't
     need to special-case which one happened.
     """
     try:
-        result = run_true_two_stage_optimization(mu_vec, sigma_eps, K_matrix, clusters_dict, lam, w_max=w_max, Rf=Rf, maxiter=maxiter)
+        result = run_true_two_stage_optimization(mu_vec, sigma_eps, K_matrix, clusters_dict, lam, w_max=w_max, Rf=Rf, maxiter=maxiter, nu=nu)
         return result, False
     except ValueError as e:
-        stage1_only = run_stage1_intra_cluster_slsqp(mu_vec, sigma_eps, K_matrix, clusters_dict, lam, Rf=Rf, maxiter=maxiter)
+        stage1_only = run_stage1_intra_cluster_slsqp(mu_vec, sigma_eps, K_matrix, clusters_dict, lam, Rf=Rf, maxiter=maxiter, nu=nu)
         result = {
             "weights": None, "success": False, "message": str(e),
             "g": stage1_only["g"], "cluster_mu": stage1_only["cluster_mu"],
@@ -553,6 +569,7 @@ def run_optimization_with_singleton_split(
     Rf: float = 0.045,
     maxiter: int = 300,
     max_passes: Optional[int] = None,
+    nu: float = 0.0,
 ) -> Dict[str, object]:
     """
     Top-level entry point for the solver -- this is what quant_terminal.py
@@ -616,7 +633,7 @@ def run_optimization_with_singleton_split(
     pass_num = 1
 
     while True:
-        result, infeasible = _run_single_pass(mu_vec, sigma_eps, K_matrix, current_clusters, lam, w_max, Rf, maxiter)
+        result, infeasible = _run_single_pass(mu_vec, sigma_eps, K_matrix, current_clusters, lam, w_max, Rf, maxiter, nu=nu)
 
         weights_dict = result["weights"].to_dict() if (not infeasible and result.get("weights") is not None) else None
         history.append({
@@ -671,5 +688,3 @@ def run_optimization_with_singleton_split(
         "final_clusters_dict": current_clusters,
         "n_passes": len(history),
     }
-
-

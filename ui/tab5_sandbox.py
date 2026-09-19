@@ -20,11 +20,13 @@ from dash.dependencies import Input, Output, State
 
 from ui.app_instance import app
 from ui.theme import THEME
-from ui.components import build_kpi_card, build_kpi_strip, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule
+from ui.components import build_kpi_card, build_kpi_strip, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule, build_pair_overlay_output, build_tps_formula_breakdown
 from engine.risk import compute_estrada_matrix, compute_crash_overlap_matrix
 from engine.optimizer import run_optimization_with_singleton_split
 from engine.returns import compute_composite_upside_row
+from engine.pairs import find_matched_pairs_for_overlay, apply_tilts_to_matched_pairs
 from data import snapshot_store as snap
+from data.market_data import fetch_universe_prices
 
 # NOTE (2026-09-07, Etap 3 follow-up): the panel this module renders into
 # (panel-stage4b-tracker-container) used to be gated behind Stage 3
@@ -166,7 +168,7 @@ def cap_weights_iteratively(weights, cap, max_iter=100):
     return (w / total) if total > 1e-9 else pd.Series(1.0 / n, index=weights.index), False
 
 
-def compute_sandbox_allocation(record, tickers, risk_prices, sb_lambda, sb_gamma, sb_kappa, sb_wmax, sb_rf, sb_nref, sb_alpha):
+def compute_sandbox_allocation(record, tickers, risk_prices, sb_lambda, sb_gamma, sb_kappa, sb_wmax, sb_rf, sb_nref, sb_alpha, sb_nu=0.0):
     """
     Przelicza wagi 'sandbox' NA ŻYWO -- dokładnie tym samym silnikiem
     run_optimization_with_singleton_split() (True Two-Stage SLSQP + Section
@@ -220,7 +222,7 @@ def compute_sandbox_allocation(record, tickers, risk_prices, sb_lambda, sb_gamma
                 sigma_sb = compute_estrada_matrix(returns_window)
                 crash_sb = compute_crash_overlap_matrix(risk_prices[usable_tickers], quantile=0.10)
                 split_result = run_optimization_with_singleton_split(
-                    mu_vec.reindex(usable_tickers), sigma_sb, crash_sb["K"], clusters_dict, sb_lambda, w_max=sb_wmax, Rf=sb_rf
+                    mu_vec.reindex(usable_tickers), sigma_sb, crash_sb["K"], clusters_dict, sb_lambda, w_max=sb_wmax, Rf=sb_rf, nu=sb_nu
                 )
                 w_raw = split_result["final"]["weights"].reindex(tickers).fillna(0.0)
                 extra["cluster_of"] = {t: ck for ck, members in split_result["final_clusters_dict"].items() for t in members}
@@ -229,6 +231,9 @@ def compute_sandbox_allocation(record, tickers, risk_prices, sb_lambda, sb_gamma
                 extra["delta_p"] = split_result["final"]["delta_p"]
                 extra["k_penalty_p"] = split_result["final"]["k_penalty_p"]
                 extra["tps_p"] = split_result["final"]["tps_p"]
+                extra["lam_used"] = sb_lambda
+                extra["nu_used"] = sb_nu
+                extra["rf_used"] = sb_rf
                 if split_result["split_triggered"]:
                     note = f"⚡ Auto-promocja do singletona ({split_result['n_passes']} przebiegi): {', '.join(split_result['promoted_tickers'])}."
             except Exception:
@@ -252,23 +257,27 @@ def compute_sandbox_allocation(record, tickers, risk_prices, sb_lambda, sb_gamma
     Output("kpi-summary-row", "children"), Output("sandbox-weights-table-container", "children"),
     Output("graph-forward-equity-curves", "figure"), Output("graph-asset-returns-bar", "figure"),
     Output("graph-forward-drawdowns", "figure"), Output("snapshot-meta-info", "children"),
-    Output("sandbox-mini-kpi-row", "children"),
-    Input("dropdown-snapshot-select", "value"), Input("slider-sb-alpha", "value"), Input("slider-sb-lambda", "value"), Input("slider-sb-gamma", "value"),
+    Output("sandbox-mini-kpi-row", "children"), Output("store-sandbox-manual-weights", "data"),
+    Output("sandbox-formula-breakdown", "children"),
+    Input("dropdown-snapshot-select", "value"), Input("slider-sb-alpha", "value"), Input("slider-sb-lambda", "value"), Input("slider-sb-nu", "value"), Input("slider-sb-gamma", "value"),
     Input("slider-sb-kappa", "value"), Input("slider-sb-rf", "value"), Input("slider-sb-nref", "value"),
     Input("slider-sb-wmax", "value"), Input("checklist-benchmarks", "value"), Input("btn-refresh-live", "n_clicks"),
+    Input("toggle-sandbox-pair-overlay", "value"), Input("input-sandbox-overlay-theta", "value"), Input("store-sandbox-pair-overlay-match-cache", "data"),
     prevent_initial_call=True
 )
-def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa, sb_rf, sb_nref, sb_wmax, benchmarks, _):
+def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_nu, sb_gamma, sb_kappa, sb_rf, sb_nref, sb_wmax, benchmarks, _,
+                            overlay_toggle_value, overlay_theta, pair_overlay_cache):
+    overlay_enabled = "ON" in (overlay_toggle_value or [])
     empty_fig = go.Figure()
     empty_fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"])
     empty_msg_style = {"color": THEME["text_dim"], "fontSize": "12px"}
 
     if not snapshot_id:
-        return [], html.Div("Wybierz zapisany portfel z listy powyżej.", style=empty_msg_style), empty_fig, empty_fig, empty_fig, "", []
+        return [], html.Div("Wybierz zapisany portfel z listy powyżej.", style=empty_msg_style), empty_fig, empty_fig, empty_fig, "", [], {}, html.Div()
 
     record = snap.get_snapshot(snapshot_id)
     if not record:
-        return [], html.Div("Nie znaleziono snapshotu (mógł zostać usunięty).", style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, "", []
+        return [], html.Div("Nie znaleziono snapshotu (mógł zostać usunięty).", style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, "", [], {}, html.Div()
 
     created_at_full = record.get("created_at", "")
     created_at = created_at_full[:10] if created_at_full else "?"
@@ -278,7 +287,7 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa,
     orig_weights = pd.Series(record.get("final_weights", {}))
     tickers = list(orig_weights.index)
     if not tickers:
-        return [], html.Div("Snapshot nie zawiera żadnych aktywów.", style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info, []
+        return [], html.Div("Snapshot nie zawiera żadnych aktywów.", style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info, [], {}, html.Div()
 
     # Pobieramy DŁUGIE okno (5 lat wstecz od dnia zapisu, aż do dziś) w JEDNYM zapytaniu --
     # ryzyko (Sigma_eps + K) liczymy z ostatniej, świeżej części tego okna (zawsze wystarczająco
@@ -294,7 +303,7 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa,
 
     if full_prices.empty:
         msg = "Błąd pobierania danych z Yahoo (rate limit / brak połączenia?) — spróbuj ponownie za chwilę."
-        return [], html.Div(msg, style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info, []
+        return [], html.Div(msg, style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info, [], {}, html.Div()
 
     # RAW (bez dropna!) -- ragged multi-exchange NaN-y są potrzebne compute_crash_overlap_matrix
     # (Option A, per-para przecięcie dat); compute_sandbox_allocation robi lokalny .dropna()
@@ -304,20 +313,35 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa,
 
     if prices.empty or len(prices) < 2:
         msg = "Za mało sesji giełdowych od dnia zapisu, żeby narysować krzywą equity (za świeży snapshot — wróć za dzień/dwa)."
-        return [], html.Div(msg, style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info, []
+        return [], html.Div(msg, style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info, [], {}, html.Div()
 
     missing_tickers = [t for t in tickers if t not in prices.columns]
     stock_prices = prices[[t for t in tickers if t in prices.columns]].dropna(how="any")
     if stock_prices.shape[1] == 0 or len(stock_prices) < 2:
-        return [], html.Div("Brak wspólnych danych cenowych dla żadnej spółki z portfela.", style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info, []
+        return [], html.Div("Brak wspólnych danych cenowych dla żadnej spółki z portfela.", style={"color": THEME["orange"]}), empty_fig, empty_fig, empty_fig, meta_info, [], {}, html.Div()
 
     valid_tickers = list(stock_prices.columns)
     stock_returns = stock_prices.pct_change().fillna(0.0)
 
     manual_weights, sandbox_note, sandbox_extra = compute_sandbox_allocation(
         record, valid_tickers, risk_prices_full, sb_lambda, sb_gamma, sb_kappa, sb_wmax, sb_rf, sb_nref,
-        sb_alpha if isinstance(sb_alpha, (int, float)) else 0.5
+        sb_alpha if isinstance(sb_alpha, (int, float)) else 0.5, sb_nu=(sb_nu if isinstance(sb_nu, (int, float)) else 0.0)
     )
+    manual_weights_raw = manual_weights.to_dict()
+
+    # Confirmed 2026-09-19 (poprawka na prosbe wlasciciela projektu): NIE
+    # zamieniamy juz krzywej "Manual Sandbox" w miejscu -- to ukrywalo baze
+    # do porownania. Zamiast tego, gdy przelacznik WLACZONY i dobor par juz
+    # zrobiony, liczymy OSOBNY wektor wag (manual_weights_overlay) i OSOBNA
+    # krzywa equity, ktora pokazuje sie OBOK oryginalnej "Manual Sandbox"
+    # (nie zamiast niej) -- uzytkownik widzi obie na raz, bezposrednio
+    # porownywalne. Baza (manual_weights) zostaje NIETKNIETA w kazdym
+    # przypadku.
+    manual_weights_overlay = None
+    if overlay_enabled and pair_overlay_cache and pair_overlay_cache.get("matched_pairs_info"):
+        overlay_theta = overlay_theta if isinstance(overlay_theta, (int, float)) else 0.15
+        tilt_result = apply_tilts_to_matched_pairs(manual_weights_raw, pair_overlay_cache["matched_pairs_info"], theta=overlay_theta, wmax=sb_wmax)
+        manual_weights_overlay = pd.Series(tilt_result["weights"])
 
     # --- EQUITY CURVES (proste zwroty -- jedyny poprawny sposób na kompoundowanie do V_t) ---
     w_orig_vec = orig_weights.reindex(valid_tickers).fillna(0.0).values
@@ -330,6 +354,12 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa,
     sb_daily_ret = pd.Series(stock_returns.values @ w_sb_vec, index=stock_returns.index)
     sb_eq = 100.0 * (1.0 + sb_daily_ret).cumprod()
 
+    sb_overlay_eq = None
+    if manual_weights_overlay is not None:
+        w_sb_overlay_vec = manual_weights_overlay.reindex(valid_tickers).fillna(0.0).values
+        sb_overlay_daily_ret = pd.Series(stock_returns.values @ w_sb_overlay_vec, index=stock_returns.index)
+        sb_overlay_eq = 100.0 * (1.0 + sb_overlay_daily_ret).cumprod()
+
     w_eq_vec = np.full(len(valid_tickers), 1.0 / len(valid_tickers))
     eq_1n_eq = 100.0 * (1.0 + pd.Series(stock_returns.values @ w_eq_vec, index=stock_returns.index)).cumprod()
 
@@ -341,6 +371,8 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa,
     fig_eq = go.Figure()
     fig_eq.add_trace(go.Scatter(x=orig_eq.index, y=orig_eq.values, mode='lines', name="Original Portfolio (zapisany)", line=dict(color=THEME["accent"], width=3)))
     fig_eq.add_trace(go.Scatter(x=sb_eq.index, y=sb_eq.values, mode='lines', name="Manual Sandbox (suwaki)", line=dict(color=THEME["orange"], width=2.5, dash='dash')))
+    if sb_overlay_eq is not None:
+        fig_eq.add_trace(go.Scatter(x=sb_overlay_eq.index, y=sb_overlay_eq.values, mode='lines', name="Manual Sandbox + RV overlay", line=dict(color="#00C853", width=2.5, dash='dot')))
     if "1N" in (benchmarks or []):
         fig_eq.add_trace(go.Scatter(x=eq_1n_eq.index, y=eq_1n_eq.values, mode='lines', name="Equal Weight (1/N)", line=dict(color="#4A90A4", width=2)))
     if "INV_VOL" in (benchmarks or []):
@@ -471,4 +503,118 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_gamma, sb_kappa,
         {"label": "TPS_P (sandbox)", "value": _fmt_num(sandbox_extra.get("tps_p")), "sub": "Tail-Penalized Sortino", "color": THEME["accent"]},
     ])
 
-    return kpi_cards, html.Div(weights_children), fig_eq, fig_bar, fig_dd, meta_info, mini_kpi
+    formula_breakdown = build_tps_formula_breakdown(
+        mu_p=sandbox_extra.get("mu_p"), rf=sandbox_extra.get("rf_used", sb_rf if isinstance(sb_rf, (int, float)) else 0.045),
+        sigma_p=sandbox_extra.get("delta_p"), k_p=sandbox_extra.get("k_penalty_p"),
+        lam=sandbox_extra.get("lam_used", 0.0), nu=sandbox_extra.get("nu_used", 0.0),
+        tps_p=sandbox_extra.get("tps_p"),
+    )
+
+    return kpi_cards, html.Div(weights_children), fig_eq, fig_bar, fig_dd, meta_info, mini_kpi, manual_weights_raw, formula_breakdown
+
+# ---------------------------------------------------------------------------
+# Relative Value -- nakladka po optymalizacji w Sandboxie (2026-09-18),
+# ta sama dwuetapowa architektura co Tab 4 (patrz komentarz modulu w
+# ui/tab4_rebalance.py dla pelnego uzasadnienia projektowego). Roznica:
+# tutaj przelacznik `toggle-sandbox-pair-overlay` faktycznie WPLYWA na
+# sledzona krzywa equity (patrz update_forward_tracker powyzej), nie tylko
+# na osobna tabele diagnostyczna -- ma to sens w Sandboxie, ktorego calym
+# celem jest porownywanie wplywu roznych wyborow na sledzony wynik.
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("store-sandbox-pair-overlay-match-cache", "data"), Output("sandbox-pair-overlay-status", "children", allow_duplicate=True),
+    Input("btn-sandbox-run-pair-overlay", "n_clicks"),
+    State("input-sandbox-overlay-theta", "value"), State("store-sandbox-manual-weights", "data"),
+    State("dropdown-snapshot-select", "value"),
+    background=True, progress=[Output("sandbox-pair-overlay-status", "children", allow_duplicate=True)],
+    prevent_initial_call=True,
+)
+def find_sandbox_pair_overlay_matches(set_progress, _n_clicks, theta, manual_weights_raw, snapshot_id):
+    """
+    Etap A (drogi) dla Sandboxa -- patrz komentarz modulu powyzej.
+
+    KRYTYCZNA POPRAWKA (2026-09-19, confirmed przez wlasciciela projektu):
+    poprzednia wersja pobierala ceny "period=10y konczace sie DZISIAJ",
+    niezaleznie od tego, kiedy snapshot zostal faktycznie utworzony -- to
+    byl prawdziwy look-ahead bias, bezposrednio lamiacy wlasna zasade
+    projektu z Part I Sekcja 6.2 ("walk-forward protocol... entirely free
+    of look-ahead and survivorship biases"). Jesli portfel zostal zapisany
+    1 wrzesnia, analiza doboru par i Z-score NIE MOZE widziec zadnych cen
+    z 2, 3, ..., 17 wrzesnia -- decyzja "ktore pary i jak przechylic" musi
+    byc mozliwa do podjecia WYLACZNIE na podstawie danych dostepnych W DNIU
+    utworzenia snapshotu, dokladnie tak samo jak oryginalne wagi solvera
+    (final_weights) same w sobie sa zamrozonym zapisem z tamtego dnia.
+
+    Naprawa: pobieramy jak dotychczas (do dzisiaj, bo tyle danych jest
+    fizycznie dostepnych), ale NATYCHMIAST obcinamy do
+    `prices_df.index <= created_at` PRZED przekazaniem czegokolwiek do
+    find_matched_pairs_for_overlay -- test trwalosci, dobor par, i Z-score
+    "aktualny" (ktory w tym kontekscie oznacza "aktualny NA DZIEN
+    utworzenia snapshotu", nie "aktualny dzisiaj") licza sie odtad
+    wylacznie na historii sprzed/do dnia zapisu. Wynikowe przechylenie jest
+    wiec decyzja mozliwa do podjecia W TAMTYM MOMENCIE -- a to, jak dobrze
+    ta decyzja wypada, sledzimy juz normalnie (Manual Sandbox + RV overlay)
+    naprzod, na realnych, poznniejszych, nie uzytych do analizy cenach.
+    """
+    theta = theta or 0.15
+
+    if not manual_weights_raw:
+        return dash.no_update, html.Div("Brak wag Sandboxa -- wybierz snapshot i poczekaj, aż suwaki się przeliczą.", style={"color": THEME["orange"]})
+
+    selected_tickers = [t for t, w in manual_weights_raw.items() if w and w > 1e-9]
+    if len(selected_tickers) < 2:
+        return dash.no_update, html.Div("Za mało spółek z dodatnią wagą do sprawdzenia par.", style={"color": THEME["orange"]})
+
+    record = snap.get_snapshot(snapshot_id) if snapshot_id else None
+    if not record:
+        return dash.no_update, html.Div("Brak wybranego snapshotu -- wybierz portfel z listy powyżej.", style={"color": THEME["orange"]})
+    created_at_str = (record.get("created_at") or "")[:10]
+    try:
+        created_at_ts = pd.Timestamp(created_at_str)
+    except (ValueError, TypeError):
+        return dash.no_update, html.Div("Snapshot nie ma poprawnej daty utworzenia -- nie mogę bezpiecznie odciąć danych.", style={"color": THEME["orange"]})
+
+    set_progress([f"Pobieram niezależnie 10 lat historii cen dla {len(selected_tickers)} wybranych spółek..."])
+    prices_df_full, valid_tickers = fetch_universe_prices(selected_tickers, period="10y")
+    if prices_df_full.empty or len(valid_tickers) < 2:
+        return dash.no_update, html.Div("Nie udało się pobrać wystarczająco długiej (10-letniej) historii cenowej.", style={"color": THEME["orange"]})
+
+    # KLUCZOWE OBCIECIE -- bez tego caly dobor par widzialby przyszlosc wzgledem dnia zapisu snapshotu
+    prices_df = prices_df_full[prices_df_full.index <= created_at_ts]
+    if prices_df.empty:
+        return dash.no_update, html.Div(f"Brak jakichkolwiek danych cenowych sprzed daty utworzenia snapshotu ({created_at_str}).", style={"color": THEME["orange"]})
+
+    def _report_progress(label, i, total):
+        if label == "Etap 1: tanie sito":
+            set_progress([f"Tanie sito theta (kanonizacja): kombinacja {i}/{total}..."])
+        else:
+            set_progress([f"Pełny test trwałości ({label}): para {i}/{total}..."])
+
+    set_progress([f"Sprawdzam pary wśród {len(valid_tickers)} spółek z dodatnią wagą, dane wyłącznie do {created_at_str}..."])
+    match_data = find_matched_pairs_for_overlay(manual_weights_raw, prices_df, theta=theta, on_progress=_report_progress)
+    match_data["as_of_date"] = created_at_str
+    status = html.Div(
+        f"Dobór par zakończony (dane wyłącznie do {created_at_str}, dnia utworzenia snapshotu -- bez zaglądania w przyszłość) -- "
+        f"{match_data['n_selected']} spółek, {match_data['n_qualifying']} par kwalifikujących się, "
+        f"{match_data['n_eligible']} dopuszczalnych, {len(match_data['matched_pairs_info'])} dopasowanych. "
+        f"Zaznacz przełącznik powyżej, żeby zastosować na śledzonej krzywej.",
+        style={"color": THEME["accent"]}
+    )
+    return match_data, status
+
+
+@app.callback(
+    Output("sandbox-pair-overlay-results", "children"), Output("sandbox-pair-overlay-status", "children", allow_duplicate=True),
+    Input("store-sandbox-pair-overlay-match-cache", "data"), Input("input-sandbox-overlay-theta", "value"),
+    State("store-sandbox-manual-weights", "data"), State("slider-sb-wmax", "value"),
+    prevent_initial_call=True,
+)
+def render_sandbox_pair_overlay_tilts(match_cache, theta, manual_weights_raw, sb_wmax):
+    """Etap B (tani) dla Sandboxa -- reaguje na kazda zmiane thety LUB na
+    swiezy wynik Etapu A, zero pobierania danych."""
+    theta = theta or 0.15
+    sb_wmax = sb_wmax if isinstance(sb_wmax, (int, float)) and sb_wmax > 0 else 0.30
+    if not manual_weights_raw:
+        return dash.no_update, dash.no_update
+    return build_pair_overlay_output(manual_weights_raw, match_cache, theta, sb_wmax, apply_tilts_to_matched_pairs, today_label="dzień zapisu")

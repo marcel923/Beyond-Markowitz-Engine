@@ -92,6 +92,9 @@ app.layout = html.Div(style={
     dcc.Store(id="store-crash-matrices"),
     dcc.Store(id="store-stage4a-params"),
     dcc.Store(id="store-stage4b-results"),
+    dcc.Store(id="store-pair-overlay-match-cache"),
+    dcc.Store(id="store-sandbox-pair-overlay-match-cache"),
+    dcc.Store(id="store-sandbox-manual-weights"),
     dcc.Store(id="store-snapshots-refresh", data=0),
 
     # --- INSPEKTOR DANYCH (OFFCANVAS, globalny — dostępny z każdej zakładki) ---
@@ -632,6 +635,8 @@ app.layout = html.Div(style={
                         html.Div(id="stage4b-error-banner"),
                         html.Div(id="stage4b-kpi-row", style={"marginBottom": "16px"}),
 
+                        html.Div(id="stage4b-formula-breakdown", style={"marginBottom": "25px"}),
+
                         html.Hr(style={"border": "none", "borderTop": f"1px solid {THEME['border']}", "margin": "10px 0 30px 0"}),
 
                         html.Div("ALLOCATION BREAKDOWN", style={"fontSize": "12px", "color": THEME["text_dim"], "fontWeight": "bold", "marginBottom": "12px"}),
@@ -661,6 +666,36 @@ app.layout = html.Div(style={
                         html.Div(id="panel-singleton-split", style={"display": "none", "marginBottom": "30px"}),
 
                         html.Hr(style={"border": "none", "borderTop": f"1px solid {THEME['border']}", "margin": "10px 0 30px 0"}),
+
+                        html.Div(style={"padding": "22px", "backgroundColor": THEME["bg_card"], "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}", "marginBottom": "20px"}, children=[
+                            html.Div("RELATIVE VALUE -- NAKŁADKA PO OPTYMALIZACJI (WYŁĄCZNIE INFORMACYJNE)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "1px", "marginBottom": "10px"}),
+                            html.Div(
+                                "Sprawdza, spośród spółek z DODATNIĄ wagą od solvera, które tworzą parę dopuszczalną do skojarzenia "
+                                "(ten sam dwupoziomowy próg co panel doboru par w Stage 1 Rebalansu), i pokazuje, jak wyglądałyby wagi "
+                                "PO redystrybucji w obrębie każdej takiej pary. Domyślnie: DODATEK do istniejącej asymetrii solvera, "
+                                "nie zastąpienie jej neutralnym 50/50. Wynik jest czysto diagnostyczny -- NIE zmienia faktycznych wag "
+                                "solvera ani tego, co zapisze przycisk SAVE PORTFOLIO poniżej. Przycisk poniżej pobiera dane i ustala "
+                                "DOBÓR par -- to jedyny drogi krok (potrzebuje 10 lat historii). Po jego zakończeniu suwak THETA działa "
+                                "NA ŻYWO, bez ponownego pobierania -- dobór par jest niezależny od thety (nie zmienia się wraz z nią), "
+                                "zmienia się tylko siła przechylenia w już znalezionych parach.",
+                                style={"fontSize": "11px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "14px"}
+                            ),
+                            html.Div(style={"display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap", "marginBottom": "12px"}, children=[
+                                html.Div(style={"minWidth": "140px"}, children=[
+                                    html.Div("THETA (siła nudge)", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Input(id="input-overlay-theta", type="number", value=0.15, min=0.05, max=0.6, step=0.05, style={
+                                        "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border_strong']}",
+                                        "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                                    }),
+                                ]),
+                                html.Button("ZNAJDŹ PARY (10Y, RAZ)", id="btn-run-pair-overlay", n_clicks=0, style={
+                                    "padding": "10px 20px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                                    "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer", "height": "38px"
+                                }),
+                            ]),
+                            html.Div(id="pair-overlay-status", style={"fontSize": "12px", "marginBottom": "14px"}),
+                            html.Div(id="pair-overlay-results"),
+                        ]),
 
                         html.Div(style={"padding": "22px", "backgroundColor": THEME["bg_card"], "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}"}, children=[
                             html.Div("SAVE CURRENT PORTFOLIO", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "1px", "marginBottom": "10px"}),
@@ -1211,6 +1246,9 @@ app.layout = html.Div(style={
                                 html.Label("LAMBDA — kara za współkrach (λ, K = J⊙S)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
                                 dcc.Slider(id="slider-sb-lambda", min=0.1, max=25.0, step=0.1, value=3.0, marks={0.1: "0.1", 5: "5", 10: "10", 15: "15", 25: "25"}, tooltip={"placement": "bottom", "always_visible": True}),
 
+                                html.Label("NU — wrażliwość na zmienność portfela (ν, Σ_ε)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
+                                dcc.Slider(id="slider-sb-nu", min=-5.0, max=15.0, step=0.5, value=0.0, marks={-5: "-5", 0: "0", 5: "5", 10: "10", 15: "15"}, tooltip={"placement": "bottom", "always_visible": True}),
+
                                 html.Label("GAMMA — kara za rozstrzał widełek (γ)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
                                 dcc.Slider(id="slider-sb-gamma", min=0.1, max=5.0, step=0.1, value=1.5, marks={0.1: "0.1", 1: "1", 2.5: "2.5", 5: "5"}, tooltip={"placement": "bottom", "always_visible": True}),
 
@@ -1229,7 +1267,39 @@ app.layout = html.Div(style={
                                 html.Div(style={"borderTop": f"1px solid {THEME['border_strong']}", "margin": "24px 0 0 0", "paddingTop": "14px"}, children=[
                                     html.Div("SANDBOX PORTFOLIO METRICS", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginBottom": "10px"}),
                                     html.Div(id="sandbox-mini-kpi-row")
-                                ])
+                                ]),
+
+                                html.Div(id="sandbox-formula-breakdown", style={"marginTop": "16px"}),
+
+                                html.Div(style={"borderTop": f"1px solid {THEME['border_strong']}", "margin": "24px 0 0 0", "paddingTop": "14px"}, children=[
+                                    dcc.Checklist(
+                                        id="toggle-sandbox-pair-overlay",
+                                        options=[{"label": " WŁĄCZ NAKŁADKĘ RELATIVE VALUE (dodaje drugą krzywą equity)", "value": "ON"}],
+                                        value=[], labelStyle={"fontSize": "10.5px", "color": THEME["text_dim"], "fontWeight": "bold"}
+                                    ),
+                                    html.Div(
+                                        "Gdy włączone: obok krzywej \"Manual Sandbox\" (bez zmian) pojawia się DRUGA, osobna krzywa "
+                                        "\"Manual Sandbox + RV overlay\" -- wagi PO redystrybucji w obrębie dopasowanych par, żeby "
+                                        "bezpośrednio porównać obie ścieżki na jednym wykresie. Wymaga wcześniejszego \"ZNAJDŹ PARY\" "
+                                        "-- inaczej nakładka nie ma czego użyć. Dobór par korzysta WYŁĄCZNIE z danych sprzed/do dnia "
+                                        "utworzenia snapshotu -- nigdy z danych późniejszych niż wtedy, kiedy portfel powstał.",
+                                        style={"fontSize": "10px", "color": THEME["text_dim"], "lineHeight": "1.5", "margin": "8px 0 12px 0"}
+                                    ),
+                                    html.Div(style={"display": "flex", "gap": "10px", "alignItems": "flex-end", "flexWrap": "wrap"}, children=[
+                                        html.Div(style={"minWidth": "110px"}, children=[
+                                            html.Div("THETA", style={"fontSize": "10px", "color": THEME["text_label"], "marginBottom": "4px"}),
+                                            dcc.Input(id="input-sandbox-overlay-theta", type="number", value=0.15, min=0.05, max=0.6, step=0.05, style={
+                                                "width": "100%", "padding": "7px 9px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border_strong']}",
+                                                "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12px", "boxSizing": "border-box"
+                                            }),
+                                        ]),
+                                        html.Button("ZNAJDŹ PARY (10Y, RAZ)", id="btn-sandbox-run-pair-overlay", n_clicks=0, style={
+                                            "padding": "9px 16px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                                            "border": "none", "borderRadius": "4px", "fontSize": "11px", "fontWeight": "700", "cursor": "pointer", "height": "34px"
+                                        }),
+                                    ]),
+                                    html.Div(id="sandbox-pair-overlay-status", style={"fontSize": "11px", "marginTop": "10px"}),
+                                ]),
                             ]),
 
                             # PRAWA KOLUMNA: WYKRESY
@@ -1273,6 +1343,12 @@ app.layout = html.Div(style={
                             html.Div("Kolumna Sandbox przelicza się natychmiast po zmianie dowolnego suwaka (λ, γ, κ, w_max, R_f, N_ref) — dokładnie tym samym silnikiem True Two-Stage SLSQP + Singleton Split co Tab 4.",
                                      style={"fontSize": "10px", "color": THEME["text_dim"], "marginBottom": "16px", "lineHeight": "1.5"}),
                             html.Div(id="sandbox-weights-table-container")
+                        ]),
+
+                        html.Div(style={"borderTop": f"1px solid {THEME['border']}", "margin": "30px 0"}),
+                        html.Div(style={"padding": "24px", "backgroundColor": THEME["bg_card"], "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}"}, children=[
+                            html.Div("RELATIVE VALUE -- SZCZEGÓŁY NAKŁADKI PO PARACH", style={"fontSize": "11px", "fontWeight": "bold", "color": THEME["text_white"], "letterSpacing": "0.5px", "marginBottom": "10px"}),
+                            html.Div(id="sandbox-pair-overlay-results")
                         ])
                     ])
                 ])

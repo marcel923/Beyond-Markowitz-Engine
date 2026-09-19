@@ -2003,3 +2003,310 @@ def cheap_theta_screen_candidates(
 
     promising_pairs_df = pd.DataFrame(promising_rows)
     return compute_persistence_qualifying_pairs(prices_df, promising_pairs_df, theta=theta, train_years=train_years, on_progress=on_progress)
+
+# ---------------------------------------------------------------------------
+# Post-Solver Pair Overlay (2026-09-18, po naprawie UI Rebalansu) --
+# confirmed design ("Droga B"): dziala PO tym, jak solver Stage 1/2 juz
+# policzyl finalne wagi, wylacznie na jego wlasnym, koncowym wektorze wag.
+# Nigdy nie dotyka mu_i ani wewnetrznej maszynerii klastrowania.
+# ---------------------------------------------------------------------------
+
+def compute_current_pair_tilt(
+    prices_a: pd.Series, prices_b: pd.Series,
+    theta: float = DEFAULT_THETA, zscore_window: int = DEFAULT_ZSCORE_WINDOW_MONTHLY,
+    train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY,
+) -> Optional[Dict[str, float]]:
+    """
+    JEDNORAZOWE przechylenie "na dzis" -- NIE backtest. Liczy dokladnie ten
+    sam mechanizm co pojedynczy krok wewnatrz simulate_monthly_walkforward
+    (swiezy hedge ratio z ostatnich `train_years`, bazowe okno Z-score z
+    ostatnich `zscore_window` sesji tego okna), ale tylko RAZ, na samym
+    koncu dostepnej historii cen -- odpowiedz na pytanie "jak przechylic
+    wage TERAZ", nie "jak by to wygladalo historycznie".
+
+    Confirmed potrzebne osobno od reszty modulu (2026-09-18): panel
+    doboru par (Etap 7o) i test trwalosci (Etap 7n) odpowiadaja na pytanie
+    "czy ta para w ogole ma sens", nie "w ktora strone przechylic wage
+    w tej chwili" -- to drugie pytanie wymaga jednego, aktualnego Z-score,
+    nie calej historii miesiecznej.
+
+    Zwraca None, jesli brakuje wystarczajacej wspolnej historii (mniej niz
+    `train_years` lat) -- wtedy przechylenie po prostu sie nie stosuje dla
+    tej pary, zamiast rzucac wyjatkiem.
+    """
+    pair_df = pd.DataFrame({"a": prices_a, "b": prices_b}).dropna(how="any")
+    if pair_df.empty:
+        return None
+
+    train_boundary_date = pair_df.index[-1] - pd.DateOffset(years=train_years)
+    train_df = pair_df[pair_df.index >= train_boundary_date]
+    if len(train_df) < TRADING_DAYS_2Y:
+        return None
+
+    hr_result = _hedge_ratio_and_spread(np.log(train_df["a"]), np.log(train_df["b"]))
+    hedge_ratio = hr_result["gamma"]
+    spread = hr_result["spread"]
+
+    baseline_window = spread.iloc[-zscore_window:] if len(spread) >= zscore_window else spread
+    baseline_mean = float(baseline_window.mean())
+    baseline_std = float(baseline_window.std())
+    if baseline_std == 0 or not np.isfinite(baseline_std):
+        return None
+
+    current_z = (float(spread.iloc[-1]) - baseline_mean) / baseline_std
+    weight_a = 0.5 + 0.5 * theta * np.tanh(-current_z)
+
+    return {"z_score": round(float(current_z), 3), "weight_a_raw": round(float(weight_a), 4), "hedge_ratio": round(float(hedge_ratio), 3)}
+
+
+def compute_pair_zscore_history(
+    prices_a: pd.Series, prices_b: pd.Series,
+    zscore_window: int = DEFAULT_ZSCORE_WINDOW_MONTHLY, train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY,
+    display_years: float = 2.0,
+) -> Optional[Dict[str, object]]:
+    """
+    Historia Z-score do wykresu (2026-09-18, naprawa powtarzalnosci +
+    wizualizacja) -- NIE pelny walk-forward z ponownym szacowaniem hedge
+    ratio co miesiac (to byloby drogie i niepotrzebne dla samego wykresu
+    kontekstu). Zamiast tego: JEDEN hedge ratio, wyestymowany z ostatnich
+    `train_years` (dokladnie ten sam, ktorego uzywa compute_current_pair_tilt),
+    zastosowany WSTECZ na spreadzie, z KROCZACYM (rolling) Z-score liczonym
+    na oknie `zscore_window` -- pokazuje, jak ten JEDEN, aktualny spread
+    zachowywal sie w ostatnich `display_years` na tle wlasnej niedawnej
+    historii, nie pelna rekonstrukcje kazdego historycznego miesiaca.
+
+    Zwraca dict {"dates": [...], "z_scores": [...], "current_z": float}
+    albo None, jesli brakuje wystarczajacej historii.
+    """
+    pair_df = pd.DataFrame({"a": prices_a, "b": prices_b}).dropna(how="any")
+    if pair_df.empty:
+        return None
+
+    train_boundary_date = pair_df.index[-1] - pd.DateOffset(years=train_years)
+    train_df = pair_df[pair_df.index >= train_boundary_date]
+    if len(train_df) < TRADING_DAYS_2Y:
+        return None
+
+    hr_result = _hedge_ratio_and_spread(np.log(train_df["a"]), np.log(train_df["b"]))
+    spread = hr_result["spread"]
+    if len(spread) < zscore_window + 20:
+        return None
+
+    rolling_mean = spread.rolling(zscore_window).mean()
+    rolling_std = spread.rolling(zscore_window).std()
+    z_series = (spread - rolling_mean) / rolling_std
+    z_series = z_series.dropna()
+    if z_series.empty:
+        return None
+
+    display_boundary = z_series.index[-1] - pd.DateOffset(years=display_years)
+    z_display = z_series[z_series.index >= display_boundary]
+    if z_display.empty:
+        z_display = z_series
+
+    return {
+        "dates": [d.strftime("%Y-%m-%d") for d in z_display.index],
+        "z_scores": [round(float(v), 3) for v in z_display.values],
+        "current_z": round(float(z_series.iloc[-1]), 3),
+    }
+
+
+def find_matched_pairs_for_overlay(
+    weights: Dict[str, float], prices_df: pd.DataFrame,
+    theta: float = DEFAULT_THETA,
+    min_windows: int = MATCH_MIN_WINDOWS, min_t_statistic: float = MATCH_MIN_T_STATISTIC,
+    zscore_window: int = DEFAULT_ZSCORE_WINDOW_MONTHLY, train_years: float = DEFAULT_TRAIN_YEARS_MONTHLY,
+    on_progress: Optional[Callable[[str, int, int], None]] = None,
+) -> Dict[str, object]:
+    """
+    Confirmed fix (2026-09-18, naprawa powtarzalnosci): to jest WYLACZNIE
+    droga czesc nakladki -- pobranie danych (przez wywolujacego, `prices_df`
+    juz gotowe) + dwuetapowy test trwalosci + Maximum Weight Matching.
+    NIE liczy tu jeszcze zadnego przechylenia wagi -- to celowo oddzielone
+    do `apply_tilts_to_matched_pairs`, zeby zmiana samej thety w UI mogla
+    przeliczac wynik NATYCHMIAST, bez ponownego wywolywania tej funkcji
+    (a wiec bez ponownego pobierania danych sieciowych -- confirmed
+    zrodlo zaobserwowanej niepowtarzalnosci wynikow miedzy klikanieciami:
+    kazde klikniecie robilo NOWE zapytanie o 10 lat cen, wiec dwa
+    "identyczne" uruchomienia mogly cicho dostac inne dane pod spodem).
+
+    Potwierdzone matematycznie NIEZALEZNE od thety: t-statystyka mechanizmu
+    theta uzywana do kwalifikacji/dopuszczalnosci nie zalezy od wartosci
+    thety (theta skaluje rownomiernie srednia i odchylenie miesiecznej
+    alpha, wiec ich stosunek -- t-statystyka -- zostaje bez zmian) --
+    dlatego bezpiecznie mozna ustalic ZBIOR dopasowanych par RAZ, i tylko
+    SILE przechylenia (nie WYBOR par) przeliczac na biezaco wraz z theta
+    w UI.
+
+    Zwraca dict:
+        "matched_pairs_info" : lista dictow (ticker_a, ticker_b,
+                                current_z, zscore_history -- gotowe do
+                                wykresu Z-score dla tej pary)
+        "unmatched_with_alternative", "n_selected", "n_qualifying", "n_eligible" -- jak dotychczas
+    """
+    selected_tickers = [t for t, w in weights.items() if w and w > 1e-9]
+    result = {
+        "matched_pairs_info": [], "unmatched_with_alternative": [],
+        "n_selected": len(selected_tickers), "n_qualifying": 0, "n_eligible": 0,
+        "all_selected_tickers": selected_tickers,
+        "qualifying_pairs": [], "eligible_pairs": [],
+    }
+    if len(selected_tickers) < 2:
+        return result
+
+    qualifying = compute_theta_qualifying_pairs_two_stage(prices_df, selected_tickers, theta=theta, on_progress=on_progress)
+    result["n_qualifying"] = len(qualifying)
+    if qualifying.empty:
+        return result
+    result["qualifying_pairs"] = [
+        {"ticker_a": row["Ticker A"], "ticker_b": row["Ticker B"], "t_statistic": round(float(row["Best t-statystyka"]), 3)}
+        for _, row in qualifying.iterrows()
+    ]
+
+    eligible = filter_pairs_eligible_for_matching(qualifying, min_windows=min_windows, min_t_statistic=min_t_statistic)
+    result["n_eligible"] = len(eligible)
+    if eligible.empty:
+        return result
+    result["eligible_pairs"] = [
+        {"ticker_a": row["Ticker A"], "ticker_b": row["Ticker B"], "t_statistic": round(float(row["Best t-statystyka"]), 3)}
+        for _, row in eligible.iterrows()
+    ]
+
+    match_result = run_maximum_weight_pair_matching(eligible)
+    matched_pairs = match_result["matched_pairs"]
+    matched_tickers = {t for a, b, _w in matched_pairs for t in (a, b)}
+
+    for a, b, t_statistic in matched_pairs:
+        if a not in prices_df.columns or b not in prices_df.columns:
+            continue
+        history = compute_pair_zscore_history(prices_df[a], prices_df[b], zscore_window=zscore_window, train_years=train_years)
+        if history is None:
+            continue
+        result["matched_pairs_info"].append({
+            "ticker_a": a, "ticker_b": b, "current_z": history["current_z"], "t_statistic": round(float(t_statistic), 3),
+            "zscore_dates": history["dates"], "zscore_values": history["z_scores"],
+        })
+
+    qualifying_pairs_set = {}
+    for _, row in qualifying.iterrows():
+        qualifying_pairs_set.setdefault(row["Ticker A"], []).append((row["Ticker B"], row["Best t-statystyka"]))
+        qualifying_pairs_set.setdefault(row["Ticker B"], []).append((row["Ticker A"], row["Best t-statystyka"]))
+
+    for t in selected_tickers:
+        if t in matched_tickers:
+            continue
+        alternatives = qualifying_pairs_set.get(t, [])
+        if not alternatives:
+            continue
+        best_alt_ticker, best_alt_t = max(alternatives, key=lambda x: x[1])
+        result["unmatched_with_alternative"].append({
+            "ticker": t, "alternative_ticker": best_alt_ticker, "best_t_statystyka": round(float(best_alt_t), 3),
+        })
+
+    return result
+
+
+def apply_tilts_to_matched_pairs(
+    weights: Dict[str, float], matched_pairs_info: List[Dict[str, object]],
+    theta: float = DEFAULT_THETA, wmax: float = 0.30,
+) -> Dict[str, object]:
+    """
+    Confirmed fix (2026-09-18): TANIA czesc nakladki -- zero pobierania
+    danych, zero ponownego testu trwalosci. Bierze juz-ustalona liste
+    dopasowanych par (z `find_matched_pairs_for_overlay`, wywolanej RAZ)
+    razem z ich juz-policzonymi, zbuforowanymi aktualnymi Z-score, i tylko
+    stosuje wzor przechylenia z PODANA theta -- moze byc wywolywana od razu
+    przy kazdej zmianie suwaka thety w UI, bez zadnego opoznienia sieciowego.
+
+    WZOR ZMIENIONY (2026-09-19, jawne cofniecie wczesniejszej decyzji, na
+    zyczenie wlasciciela projektu, z podanym recznie zweryfikowanym
+    przykladem liczbowym): poprzedni wzor byl ADDYTYWNY (udzial solvera +
+    delta z thety, przycieta do [0, wmax]) -- co okazalo sie ZBYT
+    stonowane: sygnal pary nigdy nie mogl realnie przewazyc tego, co juz
+    zdecydowal solver, nawet przy silnym Z-score. Nowy wzor jest
+    MNOZNIKOWO-PRZESKALOWANY:
+
+        udzial_nakladki_A = 0.5 + 0.5*theta*tanh(-Z)
+        udzial_nakladki_B = 1 - udzial_nakladki_A
+        surowe_A = waga_solvera_A * udzial_nakladki_A
+        surowe_B = waga_solvera_B * udzial_nakladki_B
+        skala = (waga_solvera_A + waga_solvera_B) / (surowe_A + surowe_B)
+        finalne_A = surowe_A * skala
+        finalne_B = surowe_B * skala
+
+    Weryfikacja recznego przykladu wlasciciela projektu (A=0.15, B=0.10,
+    udzial_nakladki_A=0.3): surowe_A=0.045, surowe_B=0.07, skala=2.1739,
+    finalne_A=0.0978, finalne_B=0.1522 -- zgodne co do czwartego miejsca
+    po przecinku. Sanity check: przy Z=0 (sygnal neutralny, udzial=0.5 dla
+    obu), wzor redukuje sie DOKLADNIE do oryginalnych wag solvera, dla
+    kazdej wartosci theta -- brak sygnalu = brak zmiany, niezaleznie od
+    sily nudge'a.
+
+    KRYTYCZNA ZMIANA: `wmax` jest teraz CALKOWICIE IGNOROWANY przez ta
+    funkcje (parametr zachowany w sygnaturze wylacznie dla zgodnosci
+    wywolan z UI -- nieuzywany w ciele). Potwierdzone jawnie przez
+    wlasciciela projektu: "wmax dla nakladki nie ma znaczenia, ona ma go
+    ignorowac i miec swoja mechanike" -- to oznacza, ze przy wystarczajaco
+    silnym sygnale para MOZE wylladowac ze znacznie wyzsza koncentracja niz
+    to, co solver uznal za bezpieczne dla calego portfela z perspektywy
+    Stage 1/2 (mandat koncentracji, Part I Sekcja 3). To swiadomie
+    zaakceptowane ryzyko, nie przeoczenie.
+    """
+    new_weights = dict(weights)
+    applied_pairs = []
+    for info in matched_pairs_info:
+        a, b, current_z = info["ticker_a"], info["ticker_b"], info["current_z"]
+        if a not in weights or b not in weights:
+            continue
+        combined = weights[a] + weights[b]
+        if combined <= 0:
+            continue
+
+        share_a_overlay = 0.5 + 0.5 * theta * np.tanh(-current_z)
+        share_b_overlay = 1.0 - share_a_overlay
+
+        raw_a = weights[a] * share_a_overlay
+        raw_b = weights[b] * share_b_overlay
+        raw_sum = raw_a + raw_b
+        if raw_sum <= 0:
+            continue  # zdegenerowany przypadek (np. obie wagi solvera = 0) -- para bez zmian
+        scale = combined / raw_sum
+
+        w_a_new = raw_a * scale
+        w_b_new = raw_b * scale
+
+        new_weights[a] = w_a_new
+        new_weights[b] = w_b_new
+        applied_pairs.append({
+            "ticker_a": a, "ticker_b": b, "z_score": current_z,
+            "weight_a_before": round(weights[a], 4), "weight_b_before": round(weights[b], 4),
+            "weight_a_after": round(w_a_new, 4), "weight_b_after": round(w_b_new, 4),
+        })
+    return {"weights": new_weights, "applied_pairs": applied_pairs}
+
+
+def apply_post_solver_pair_overlay(
+    weights: Dict[str, float], prices_df: pd.DataFrame,
+    theta: float = DEFAULT_THETA, wmax: float = 0.30,
+    min_windows: int = MATCH_MIN_WINDOWS, min_t_statistic: float = MATCH_MIN_T_STATISTIC,
+    on_progress: Optional[Callable[[str, int, int], None]] = None,
+) -> Dict[str, object]:
+    """
+    Cienki wrapper LACZACY `find_matched_pairs_for_overlay` (drogie) +
+    `apply_tilts_to_matched_pairs` (tanie) w jedno wywolanie -- zachowany
+    dla prostych/nieinteraktywnych zastosowan i zgodnosci wstecznej z
+    testami napisanymi przed rozdzieleniem (2026-09-18). UI Rebalansu/
+    Sandboxa NIE uzywa juz tej funkcji bezposrednio -- woli dwa osobne
+    wywolania, zeby zmiana thety nie wymagala ponownego pobierania danych.
+    """
+    match_data = find_matched_pairs_for_overlay(
+        weights, prices_df, theta=theta, min_windows=min_windows,
+        min_t_statistic=min_t_statistic, on_progress=on_progress,
+    )
+    tilt_result = apply_tilts_to_matched_pairs(weights, match_data["matched_pairs_info"], theta=theta, wmax=wmax)
+    return {
+        "weights": tilt_result["weights"], "applied_pairs": tilt_result["applied_pairs"],
+        "unmatched_with_alternative": match_data["unmatched_with_alternative"],
+        "n_selected": match_data["n_selected"], "n_qualifying": match_data["n_qualifying"],
+        "n_eligible": match_data["n_eligible"],
+    }
