@@ -3073,6 +3073,40 @@ Solver regression: NVDA/AVGO unchanged (still pinned at `w_max` on this fixture)
 
 ---
 
+### 8b. Global Sensitivity Analysis Infrastructure: Sobol + Optional Morris + PRCC (complete, infrastructure only)
+
+Confirmed follow-up, returning to and completing steps 4-5 of the sensitivity-tooling roadmap in one pass (skipping the originally-planned intermediate single-parameter-sweep/2D-heatmap steps once the project owner confirmed a preference for the full, rigorous method over any cheaper approximation, given real hardware -- i9-14900KF, 32 threads, 64GB RAM -- specifically bought with this kind of workload in mind).
+
+**Extensive design discussion preceded any code**, resolving two foundational questions the project owner correctly flagged as needing answers before anything could be built usefully:
+
+1. **How to combine multiple snapshots.** Confirmed: Sobol analysis operates on ONE frozen snapshot and ONE forward horizon at a time -- never stitches multiple snapshots' data together, since doing so would confound "which parameter caused this" with "which month had different market conditions," and the project owner's own portfolios rotate holdings and fundamental data snapshot to snapshot, making any such mixing uninterpretable. The project owner's own, separate "Połączone Portfolio" idea (plain replacement of one snapshot's tracked curve by the next at its own creation date, no smoothing) is confirmed as a distinct, simpler, independent feature -- not built in this pass, deliberately decoupled from Sobol.
+
+2. **What should the output metric(s) be.** Confirmed CAGR + Sortino + Max Drawdown, all three computed per run rather than picking one -- explicitly to let the project owner compare how a parameter's Sobol indices differ ACROSS the three outputs (a parameter raising CAGR while lowering Sortino or widening drawdown is itself the finding, directly motivated by the project owner's own gamma-at-maximum observation earlier this session -- see the preceding manual-observation commit). Deliberately did NOT use the solver's own TPS_P as a Sobol output, since it would be partially tautological (algebraically built from several of the same parameters being tested). Sortino's MAR is fixed at 0, explicitly NOT tied to the swept `rf` parameter, to avoid mechanically entangling an output's definition with one of the inputs being tested.
+
+**Engine (`engine/sobol_analysis.py`)**: full Saltelli-scheme Sobol (S1 + ST + second-order S2, via SALib), optional Morris elementary-effects screening as a cheap opt-in pre-step (confirmed optional, not forced, per the project owner's explicit preference), and PRCC as a free-riding cross-check computed on the exact same sample (zero additional solver calls). `evaluate_single_parameter_set` is a module-level, picklable function -- the unit dispatched to a `ProcessPoolExecutor` sized to `os.cpu_count()` -- confirmed as the first place in this project where a single task is large enough to actually engage more than one CPU core; this directly answers the project owner's own observation that CPU/RAM/GPU sat unused despite capable hardware, which was correctly diagnosed as "not enough work per task to matter," not a code limitation to remove. Frozen `risk_prices`/`forward_returns` are loaded once per batch and shared read-only across every candidate rather than re-fetched per row.
+
+**Confirmed bug found and fixed during initial testing, before trusting any result**: `w_max`'s sampled range must respect the specific snapshot's own ticker count -- any `w_max` below `1/n_tickers` makes the solver's own equality constraint mechanically infeasible regardless of every other parameter, which is not a real "risk" finding, just content-free wasted compute. Verified this was the sole cause of 100% of a test batch's failures (21/36) before an automatic clamp (`w_max >= 1.05/n_tickers` for the analyzed snapshot) was added; 0/36 after.
+
+**UI**: Sandbox restructured from a flat view into `dcc.Tabs` -- existing content becomes "FORWARD TRACKER", new sibling tab "ANALIZA SOBOLA" added (not a replacement). Snapshot + horizon (1m/2m/3m/6m, all four confirmed) selectors, per-parameter min/max range grid for all 8 parameters (pre-filled from sensible defaults matching the existing UI sliders' own bounds), a live cost estimate (N -> total runs -> estimated seconds on the machine's actual core count, shown BEFORE committing to a run, confirmed requirement), optional Morris checkbox, background-callback execution with live per-batch progress. Results render as grouped S1/ST bar charts with confidence intervals per output, a PRCC table, an optional Morris summary table, and an explicit warning naming the solver-failure rate when nonzero rather than silently smoothing over it.
+
+**Confirmed and tested against the project's actual situation**: a `check_sobol_horizon_availability` guard blocks running a horizon that needs more real trading sessions than have actually elapsed since a snapshot's creation date -- verified directly against the project's real first snapshot (created 2026-09-01, this analysis was built ~18 days later): correctly rejects a 6-month horizon (needs 126 sessions, only ~14 had elapsed) with a clear message rather than silently producing a look-ahead-contaminated or nonsensical result. This is confirmed, explicitly, as PURE INFRASTRUCTURE at this stage -- no historical snapshot yet has enough elapsed real sessions to produce a genuine, trustworthy finding; end-to-end verification in this pass was necessarily done on synthetic data, with real analysis expected to become possible incrementally as real time passes forward from the project's actual first snapshot.
+
+Solver regression unchanged (matches Etap 8a's baseline exactly), as expected since this entire feature is additive and never modifies the solver itself. 66/66 callbacks (+3: horizon-availability check, live cost estimate, main Sobol/Morris/PRCC run).
+
+**Explicitly deferred, not started**: the "Połączone Portfolio" (stitched multi-snapshot tracking) tab remains a separate, simpler, not-yet-built feature, confirmed decoupled from this one.
+
+---
+
+### 8c. "Since Inception" Horizon Added to Sobol Tab (complete)
+
+Confirmed small follow-up, addressing an immediate practical gap found the moment the project owner tried to actually use Etap 8b: the project's own first real snapshot (created 2026-09-01) had only 14 elapsed trading sessions at this point, short of even the smallest fixed horizon (1m = 21 sessions) -- leaving the whole new Sobol tab untestable on real data despite being otherwise ready.
+
+Added `"since_inception"` as an additional horizon option alongside the fixed 1m/2m/3m/6m choices: uses however many real trading sessions have actually elapsed since the snapshot's own creation date, whatever that number happens to be, rather than requiring a fixed count. `check_sobol_horizon_availability` now reports this option as usable once at least 1 session has elapsed (with an explicit noise-warning, not a block, below 5 sessions), and `run_sobol_analysis` sets `horizon_days = available_days` directly for this option rather than a `HORIZON_DAYS` lookup. The existing fixed-horizon behavior and its look-ahead guard are unchanged.
+
+Verified directly against the project's own real scenario (a snapshot with exactly 14 available sessions): "since inception" runs successfully using all 14, while 6m on the same snapshot still correctly refuses (112 sessions short) -- confirming this unblocks exactly the intended case without weakening the existing guard elsewhere. Solver regression unchanged. 66/66 callbacks (no new callbacks).
+
+---
+
 ## 8. Implementation Status & Development Roadmap
 
 ### Currently Implemented in Codebase:

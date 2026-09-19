@@ -22,6 +22,7 @@ from engine.pairs import MATCH_MIN_WINDOWS, MATCH_MIN_T_STATISTIC
 from ui.app_instance import app
 from ui.theme import THEME, TAB_STYLE, TAB_SELECTED_STYLE, TABS_CONTAINER_STYLE
 from ui.components import STAGE4A_PARAMS_CONFIG, build_param_card, STAGE3_COLUMNS, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule
+from engine.sobol_analysis import PARAM_ORDER, DEFAULT_PARAM_RANGES, HORIZON_DAYS
 
 SIDEBAR_ITEMS = [
     ("overview", "OV", "Overview"),
@@ -1168,6 +1169,8 @@ app.layout = html.Div(style={
     ]),
 
     html.Div(id="module-sandbox", style={"display": "none"}, children=[
+        dcc.Tabs(id="sandbox-subtabs", value="sandbox-tab-tracker", style=TABS_CONTAINER_STYLE, children=[
+        dcc.Tab(label="FORWARD TRACKER", value="sandbox-tab-tracker", style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE, children=[
             html.Div(style={"paddingTop": "30px"}, children=[
                 html.Div(id="panel-stage4b-tracker-container", style={"marginBottom": "16px"}, children=[
                     html.Div(style={"backgroundColor": THEME["bg_card"], "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}", "padding": "22px"}, children=[
@@ -1353,6 +1356,80 @@ app.layout = html.Div(style={
                     ])
                 ])
             ])
+        ]),  # koniec dcc.Tab "sandbox-tab-tracker"
+
+        dcc.Tab(label="ANALIZA SOBOLA", value="sandbox-tab-sobol", style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE, children=[
+            html.Div(style={"paddingTop": "30px"}, children=[
+                html.Div(style={"backgroundColor": THEME["bg_card"], "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}", "padding": "22px", "marginBottom": "20px"}, children=[
+                    html.Div("GLOBALNA ANALIZA WRAŻLIWOŚCI (SOBOL / MORRIS / PRCC)", style={"fontSize": "11px", "color": THEME["accent"], "fontWeight": "bold", "letterSpacing": "1.5px", "marginBottom": "8px"}),
+                    html.H2("Diagnostyka Wpływu Parametrów Solvera", style={"fontSize": "26px", "fontWeight": "700", "margin": "0 0 16px 0"}),
+                    html.Div(
+                        "Działa na JEDNYM, ustalonym zapisie (dane fundamentalne + ceny zamrożone na dzień utworzenia) i JEDNYM wybranym "
+                        "horyzoncie -- NIE łączy wielu zapisów w jeden portfel (do tego służy osobny mechanizm \"Połączone Portfolio\"). "
+                        "Dla każdej z tysięcy kombinacji 8 parametrów: liczy solver, trzyma wynikowe wagi przez cały horyzont na REALNYCH, "
+                        "już zaszłych cenach (bez zaglądania w przyszłość), i ocenia CAGR/Sortino/Max Drawdown. Sobol rozkłada wariancję "
+                        "każdego z tych trzech wyników na wkład każdego parametru z osobna oraz wkład interakcji między nimi.",
+                        style={"fontSize": "11.5px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "18px"}
+                    ),
+
+                    html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "16px", "marginBottom": "18px"}, children=[
+                        html.Div(children=[
+                            html.Div("ZAPIS (SNAPSHOT)", style={"fontSize": "10px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                            dcc.Dropdown(id="dropdown-sobol-snapshot", placeholder="Wybierz zapisany portfel...", style={"color": "#000"}),
+                        ]),
+                        html.Div(children=[
+                            html.Div("HORYZONT PRZYSZŁY", style={"fontSize": "10px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                            dcc.Dropdown(id="dropdown-sobol-horizon", clearable=False, value="1m", options=[
+                                {"label": f"{lbl} ({days} sesji)", "value": lbl} for lbl, days in HORIZON_DAYS.items()
+                            ] + [
+                                {"label": "Od początku (tyle sesji, ile jest dostępnych)", "value": "since_inception"}
+                            ], style={"color": "#000"}),
+                        ]),
+                    ]),
+                    html.Div(id="sobol-horizon-availability-note", style={"fontSize": "10.5px", "color": THEME["warn"], "marginBottom": "16px"}),
+
+                    html.Div("ZAKRESY PARAMETRÓW (min / max przeszukiwania)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginBottom": "8px"}),
+                    html.Div(style={"display": "grid", "gridTemplateColumns": "repeat(4, 1fr)", "gap": "12px", "marginBottom": "20px"}, children=[
+                        html.Div(style={"padding": "10px", "backgroundColor": THEME["bg_input"], "borderRadius": "4px", "border": f"1px solid {THEME['border']}"}, children=[
+                            html.Div(pname, style={"fontSize": "10px", "color": THEME["text_label"], "marginBottom": "6px", "fontWeight": "bold"}),
+                            html.Div(style={"display": "flex", "gap": "6px"}, children=[
+                                dcc.Input(id=f"sobol-range-{pname}-min", type="number", value=DEFAULT_PARAM_RANGES[pname][0], style={
+                                    "width": "50%", "padding": "6px", "backgroundColor": THEME["bg_base"], "border": f"1px solid {THEME['border_strong']}",
+                                    "borderRadius": "3px", "color": THEME["text_white"], "fontSize": "11px", "boxSizing": "border-box"
+                                }),
+                                dcc.Input(id=f"sobol-range-{pname}-max", type="number", value=DEFAULT_PARAM_RANGES[pname][1], style={
+                                    "width": "50%", "padding": "6px", "backgroundColor": THEME["bg_base"], "border": f"1px solid {THEME['border_strong']}",
+                                    "borderRadius": "3px", "color": THEME["text_white"], "fontSize": "11px", "boxSizing": "border-box"
+                                }),
+                            ]),
+                        ]) for pname in PARAM_ORDER
+                    ]),
+
+                    html.Div(style={"display": "flex", "gap": "20px", "alignItems": "flex-end", "flexWrap": "wrap", "marginBottom": "10px"}, children=[
+                        html.Div(style={"minWidth": "140px"}, children=[
+                            html.Div("N (bazowa liczba próbek Sobola)", style={"fontSize": "10px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                            dcc.Input(id="input-sobol-n", type="number", value=256, min=4, step=1, style={
+                                "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border_strong']}",
+                                "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                            }),
+                        ]),
+                        html.Div(children=[
+                            dcc.Checklist(id="checkbox-sobol-morris-first", options=[{"label": " Najpierw tani przesiew Morrisa (opcjonalnie)", "value": "ON"}],
+                                          value=[], labelStyle={"fontSize": "11px", "color": THEME["text_dim"], "fontWeight": "bold"}),
+                        ]),
+                        html.Button("URUCHOM ANALIZĘ", id="btn-run-sobol", n_clicks=0, style={
+                            "padding": "12px 24px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                            "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer", "height": "40px"
+                        }),
+                    ]),
+                    html.Div(id="sobol-cost-estimate", style={"fontSize": "11px", "color": THEME["text_dim"], "marginBottom": "6px"}),
+                    html.Div(id="sobol-run-status", style={"fontSize": "12px", "fontWeight": "bold"}),
+                ]),
+
+                html.Div(id="sobol-results-container"),
+            ])
+        ]),  # koniec dcc.Tab "sandbox-tab-sobol"
+        ])  # koniec dcc.Tabs "sandbox-subtabs"
     ])  # koniec module-sandbox
     ])  # koniec glownego kontenera tresci (obok sidebaru)
 ])

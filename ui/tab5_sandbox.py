@@ -25,6 +25,9 @@ from engine.risk import compute_estrada_matrix, compute_crash_overlap_matrix
 from engine.optimizer import run_optimization_with_singleton_split
 from engine.returns import compute_composite_upside_row
 from engine.pairs import find_matched_pairs_for_overlay, apply_tilts_to_matched_pairs
+from engine.sobol_analysis import (
+    run_morris_screen, run_sobol_batch, estimate_run_cost, PARAM_ORDER, DEFAULT_PARAM_RANGES, HORIZON_DAYS,
+)
 from data import snapshot_store as snap
 from data.market_data import fetch_universe_prices
 
@@ -45,13 +48,14 @@ from data.market_data import fetch_universe_prices
 
 @app.callback(
     Output("dropdown-snapshot-select", "options"), Output("dropdown-snapshot-select", "value"),
+    Output("dropdown-sobol-snapshot", "options"), Output("dropdown-sobol-snapshot", "value"),
     Input("store-snapshots-refresh", "data"),
 )
 def load_snapshot_list(_):
     snapshots = snap.list_snapshots()
     options = [{"label": f"{s['snapshot_name']}  ({s['snapshot_id']})", "value": s["snapshot_id"]} for s in snapshots]
     value = options[0]["value"] if options else None
-    return options, value
+    return options, value, options, value
 
 
 @app.callback(
@@ -618,3 +622,263 @@ def render_sandbox_pair_overlay_tilts(match_cache, theta, manual_weights_raw, sb
     if not manual_weights_raw:
         return dash.no_update, dash.no_update
     return build_pair_overlay_output(manual_weights_raw, match_cache, theta, sb_wmax, apply_tilts_to_matched_pairs, today_label="dzień zapisu")
+
+
+# ---------------------------------------------------------------------------
+# Zakładka SOBOL -- globalna analiza wrażliwości (2026-09-19). Działa na
+# JEDNYM, zamrożonym zapisie i JEDNYM horyzoncie na raz -- patrz pełne
+# uzasadnienie projektowe w engine/sobol_analysis.py.
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("sobol-horizon-availability-note", "children"),
+    Input("dropdown-sobol-snapshot", "value"), Input("dropdown-sobol-horizon", "value"),
+)
+def check_sobol_horizon_availability(snapshot_id, horizon_label):
+    """Sprawdza, czy od utworzenia zapisu minelo wystarczajaco duzo REALNYCH
+    sesji gieldowych, zeby w ogole mozna bylo ocenic wybrany horyzont bez
+    look-ahead bias -- potwierdzone kluczowe zabezpieczenie (2026-09-19):
+    pierwszy zapis w tym projekcie powstal 2026-09-01, wiec np. horyzont 6m
+    (126 sesji) fizycznie nie moze byc jeszcze oceniony na REALNYCH danych.
+
+    "since_inception" (dodane 2026-09-19, na prosbe wlasciciela projektu --
+    pierwszy zapis mial wtedy dopiero 14 sesji, za malo na jakikolwiek staly
+    horyzont): uzywa WSZYSTKICH dostepnych sesji od utworzenia zapisu do
+    dzis, zamiast stalej liczby dni -- zawsze "dostepne", jesli minela
+    chociaz garstka sesji, kosztem tego, ze wynik na bardzo krotkim oknie
+    bedzie statystycznie szumny (ostrzezenie ponizej, nie blokada)."""
+    if not snapshot_id or not horizon_label:
+        return ""
+    record = snap.get_snapshot(snapshot_id)
+    if not record:
+        return ""
+    try:
+        created_at = pd.Timestamp((record.get("created_at") or "")[:10])
+    except (ValueError, TypeError):
+        return ""
+    available_days = int(np.busday_count(created_at.date(), pd.Timestamp.now().date()))
+
+    if horizon_label == "since_inception":
+        if available_days < 1:
+            return "⚠ Zapis został utworzony dzisiaj -- brak jeszcze żadnej pełnej sesji do oceny."
+        if available_days < 5:
+            return (f"⚠ Dostępne tylko {available_days} sesji od utworzenia zapisu -- można uruchomić, ale CAGR/Sortino "
+                     f"na tak krótkim oknie będą bardzo szumne (roczone z garstki dni). Traktuj wynik jako test mechanizmu, nie diagnozę.")
+        return f"✓ Dostępnych {available_days} sesji od utworzenia zapisu -- \"Od początku\" użyje wszystkich {available_days}."
+
+    needed_days = HORIZON_DAYS.get(horizon_label, 21)
+    if available_days < needed_days:
+        return (f"⚠ Od utworzenia tego zapisu minęło {available_days} sesji giełdowych, a horyzont {horizon_label} "
+                f"potrzebuje {needed_days} REALNYCH sesji (bez zaglądania w przyszłość). Analiza nie może się jeszcze "
+                f"uruchomić dla tej kombinacji zapis/horyzont -- wróć za {needed_days - available_days} sesji, albo wybierz krótszy horyzont "
+                f"(albo \"Od początku\", żeby użyć tego, co już jest dostępne).")
+    return f"✓ Dostępnych {available_days} sesji od utworzenia zapisu -- horyzont {horizon_label} ({needed_days} sesji) może zostać oceniony."
+
+
+@app.callback(
+    Output("sobol-cost-estimate", "children"),
+    Input("input-sobol-n", "value"), Input("checkbox-sobol-morris-first", "value"),
+)
+def update_sobol_cost_estimate(n_value, morris_checked):
+    n_value = int(n_value) if isinstance(n_value, (int, float)) and n_value >= 4 else 256
+    cost = estimate_run_cost(n_value)
+    msg = (f"Sobol: N={n_value} → {cost['n_runs']} przebiegów · na {cost['n_workers']} rdzeniach: "
+           f"~{cost['est_seconds_parallel']:.0f}s (sekwencyjnie: ~{cost['est_seconds_sequential']/60:.1f} min)")
+    if "ON" in (morris_checked or []):
+        morris_runs = 20 * (len(PARAM_ORDER) + 1)
+        msg += f"  ·  Morris (przesiew, 20 trajektorii): +{morris_runs} przebiegów, ~{morris_runs*0.05/cost['n_workers']:.0f}s"
+    return msg
+
+
+def _build_sobol_bar_figure(names, s1, s1_conf, st, st_conf, title):
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=names, y=s1, name="S1 (pierwszego rzędu)", marker_color=THEME["accent"],
+                          error_y=dict(type="data", array=s1_conf, visible=True)))
+    fig.add_trace(go.Bar(x=names, y=st, name="ST (całkowity, z interakcjami)", marker_color=THEME["orange"],
+                          error_y=dict(type="data", array=st_conf, visible=True)))
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+        title=dict(text=title, font=dict(size=13, color=THEME["text_white"])),
+        barmode="group", height=320, margin=dict(l=40, r=20, t=40, b=40),
+        xaxis=dict(tickfont=dict(size=10, color=THEME["text_dim"])),
+        yaxis=dict(title="Indeks Sobola", tickfont=dict(size=10, color=THEME["text_dim"])),
+        legend=dict(font=dict(size=10, color=THEME["text_white"])),
+    )
+    return fig
+
+
+@app.callback(
+    Output("sobol-results-container", "children"), Output("sobol-run-status", "children"),
+    Input("btn-run-sobol", "n_clicks"),
+    State("dropdown-sobol-snapshot", "value"), State("dropdown-sobol-horizon", "value"),
+    State("input-sobol-n", "value"), State("checkbox-sobol-morris-first", "value"),
+    *[State(f"sobol-range-{p}-min", "value") for p in PARAM_ORDER],
+    *[State(f"sobol-range-{p}-max", "value") for p in PARAM_ORDER],
+    background=True, progress=[Output("sobol-run-status", "children", allow_duplicate=True)],
+    prevent_initial_call=True,
+)
+def run_sobol_analysis(set_progress, _n_clicks, snapshot_id, horizon_label, n_value, morris_checked, *range_values):
+    """
+    Confirmed pipeline (2026-09-19): pobiera JEDEN zapis, zamraża jego ceny
+    na dwie CZĘŚCI -- risk_prices (do i wliczajac dzien utworzenia, do
+    estymacji Sigma_eps/K -- ten sam ~5-letni konwencja co reszta Sandboxa)
+    i forward_returns (REALNE, juz zaszle sesje PO dniu utworzenia,
+    obciete dokladnie do wybranego horyzontu -- zero danych z przyszlosci
+    wzgledem TEGO zapisu mozliwe z konstrukcji, bo "przyszlosc" tej analizy
+    to i tak juz przeszlosc wzgledem dzisiejszej daty).
+    """
+    theta_mins = range_values[:len(PARAM_ORDER)]
+    theta_maxs = range_values[len(PARAM_ORDER):]
+    param_ranges = {p: (float(lo) if isinstance(lo, (int, float)) else DEFAULT_PARAM_RANGES[p][0],
+                         float(hi) if isinstance(hi, (int, float)) else DEFAULT_PARAM_RANGES[p][1])
+                    for p, lo, hi in zip(PARAM_ORDER, theta_mins, theta_maxs)}
+
+    if not snapshot_id:
+        return html.Div(), html.Div("Wybierz zapisany portfel z listy powyżej.", style={"color": THEME["orange"]})
+    record = snap.get_snapshot(snapshot_id)
+    if not record:
+        return html.Div(), html.Div("Nie znaleziono wybranego zapisu.", style={"color": THEME["orange"]})
+
+    try:
+        created_at = pd.Timestamp((record.get("created_at") or "")[:10])
+    except (ValueError, TypeError):
+        return html.Div(), html.Div("Zapis nie ma poprawnej daty utworzenia.", style={"color": THEME["orange"]})
+
+    available_days = int(np.busday_count(created_at.date(), pd.Timestamp.now().date()))
+    if horizon_label == "since_inception":
+        horizon_days = available_days
+        if horizon_days < 3:
+            return html.Div(), html.Div(
+                f"Za mało sesji od utworzenia zapisu ({horizon_days}) -- potrzeba co najmniej 3, żeby policzyć cokolwiek sensownego.",
+                style={"color": THEME["orange"]})
+    else:
+        horizon_days = HORIZON_DAYS.get(horizon_label, 21)
+        if available_days < horizon_days:
+            return html.Div(), html.Div(
+                f"Za mało realnych sesji od utworzenia zapisu ({available_days} < {horizon_days} potrzebnych dla {horizon_label}).",
+                style={"color": THEME["orange"]})
+
+    tickers = list(record.get("final_weights", {}).keys())
+    if len(tickers) < 2:
+        return html.Div(), html.Div("Zapis ma mniej niż 2 spółki -- za mało do analizy.", style={"color": THEME["orange"]})
+
+    set_progress(["Pobieram historię cen (od 5 lat przed dniem zapisu do dziś)..."])
+    fetch_start = (created_at - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
+    try:
+        all_prices = snap.fetch_price_history(tickers, fetch_start)
+    except Exception as e:
+        return html.Div(), html.Div(f"Błąd pobierania cen: {e}", style={"color": THEME["orange"]})
+    if all_prices.empty:
+        return html.Div(), html.Div("Nie udało się pobrać żadnych cen.", style={"color": THEME["orange"]})
+
+    risk_prices = all_prices[all_prices.index <= created_at].dropna(axis=1, how="all")
+    forward_prices_full = all_prices[all_prices.index > created_at]
+    if risk_prices.shape[1] < 2 or len(risk_prices) < 20:
+        return html.Div(), html.Div("Za mało wspólnej historii cenowej sprzed dnia zapisu do estymacji ryzyka.", style={"color": THEME["orange"]})
+
+    common_tickers = [t for t in risk_prices.columns if t in forward_prices_full.columns]
+    forward_prices = forward_prices_full[common_tickers].iloc[:horizon_days]
+    combined_for_returns = pd.concat([risk_prices[common_tickers].iloc[[-1]], forward_prices])
+    forward_returns = np.log(combined_for_returns / combined_for_returns.shift(1)).dropna()
+    if len(forward_returns) < horizon_days - 2:  # mala tolerancja na dni bez notowan (swieta itp.)
+        return html.Div(), html.Div(
+            f"Za mało realnych sesji cenowych w oknie forward ({len(forward_returns)} < ~{horizon_days}).",
+            style={"color": THEME["orange"]})
+
+    fundamental_inputs = record.get("fundamental_inputs", [])
+    cluster_of = record.get("cluster_of", {t: 1 for t in common_tickers})
+    n_value = int(n_value) if isinstance(n_value, (int, float)) and n_value >= 4 else 256
+
+    morris_summary = None
+    if "ON" in (morris_checked or []):
+        set_progress(["Uruchamiam tani przesiew Morrisa (20 trajektorii)..."])
+        def _morris_progress(completed, total, elapsed):
+            set_progress([f"Morris: {completed}/{total} przebiegów ({elapsed:.0f}s)..."])
+        morris_summary = run_morris_screen(fundamental_inputs, cluster_of, risk_prices[common_tickers], forward_returns,
+                                             param_ranges=param_ranges, n_trajectories=20, on_progress=_morris_progress)
+
+    def _sobol_progress(completed, total, elapsed):
+        if completed % max(total // 100, 1) == 0 or completed == total:
+            set_progress([f"Sobol: {completed}/{total} przebiegów ({elapsed:.0f}s, ~{elapsed/max(completed,1)*(total-completed):.0f}s pozostało)..."])
+
+    set_progress([f"Uruchamiam pełną analizę Sobola (N={n_value})..."])
+    sobol_result = run_sobol_batch(fundamental_inputs, cluster_of, risk_prices[common_tickers], forward_returns,
+                                     param_ranges=param_ranges, N=n_value, on_progress=_sobol_progress)
+
+    # --- Renderowanie wynikow ---
+    sections = []
+    if morris_summary is not None:
+        morris_rows = []
+        for pname in PARAM_ORDER:
+            row = {"Parametr": pname}
+            for output_name in ["CAGR", "Sortino", "MaxDrawdown"]:
+                out = morris_summary["outputs"].get(output_name, {})
+                if "error" not in out:
+                    idx = out["names"].index(pname)
+                    row[f"{output_name} μ*"] = round(out["mu_star"][idx], 4)
+            morris_rows.append(row)
+        sections.append(html.Div([
+            html.Div(f"PRZESIEW MORRISA ({morris_summary['n_runs']} przebiegów, {morris_summary['n_solver_failures']} awarii solvera)",
+                     style={"fontSize": "11px", "fontWeight": "bold", "color": THEME["text_white"], "marginBottom": "8px"}),
+            dash_table.DataTable(
+                columns=[{"name": c, "id": c} for c in morris_rows[0].keys()] if morris_rows else [],
+                data=morris_rows, style_header=datatable_style_header(), style_data=datatable_style_data(), style_cell=datatable_style_cell(),
+                style_data_conditional=[datatable_row_alt_rule()],
+            ),
+        ], style={"marginBottom": "24px"}))
+
+    charts = []
+    for output_name in ["CAGR", "Sortino", "MaxDrawdown"]:
+        out = sobol_result["sobol"].get(output_name, {})
+        if "error" in out:
+            charts.append(html.Div(f"{output_name}: błąd analizy Sobola -- {out['error']}", style={"color": THEME["orange"], "fontSize": "11px"}))
+            continue
+        charts.append(dcc.Graph(figure=_build_sobol_bar_figure(out["names"], out["S1"], out["S1_conf"], out["ST"], out["ST_conf"], output_name),
+                                  config={"displayModeBar": False}))
+
+    prcc_rows = []
+    for pname in PARAM_ORDER:
+        row = {"Parametr": pname}
+        for output_name in ["CAGR", "Sortino", "MaxDrawdown"]:
+            v = sobol_result["prcc"].get(output_name, {}).get(pname)
+            row[output_name] = round(v, 4) if v is not None and np.isfinite(v) else "n/d"
+        prcc_rows.append(row)
+
+    n_fail = sobol_result["n_solver_failures"]
+    fail_note = html.Div()
+    if n_fail > 0:
+        fail_pct = 100 * n_fail / max(sobol_result["n_runs"], 1)
+        fail_note = html.Div(
+            f"⚠ {n_fail}/{sobol_result['n_runs']} przebiegów ({fail_pct:.1f}%) nie zbiegło się -- zastąpione medianą próbki. "
+            f"Przy dużym odsetku awarii wyniki poniżej mogą być zniekształcone.",
+            style={"fontSize": "10.5px", "color": THEME["warn"], "marginBottom": "12px"}
+        )
+
+    small_n_note = html.Div(
+        "Uwaga: przy małym N pojedyncze wartości S1 mogą wyjść nieznacznie ujemne mimo że S1≥0 teoretycznie -- "
+        "to znany artefakt estymatora przy małej próbce (wartość bliska zeru), nie błąd.",
+        style={"fontSize": "10px", "color": THEME["text_dim"], "marginBottom": "12px", "fontStyle": "italic"}
+    ) if n_value < 128 else html.Div()
+
+    results_layout = html.Div([
+        *sections,
+        fail_note, small_n_note,
+        html.Div("INDEKSY SOBOLA (S1 = wkład sam w sobie, ST = wkład razem z interakcjami)",
+                 style={"fontSize": "11px", "fontWeight": "bold", "color": THEME["text_white"], "marginBottom": "8px"}),
+        html.Div(charts, style={"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(380px, 1fr))", "gap": "12px", "marginBottom": "20px"}),
+        html.Div("PRCC (niezależny sprawdzian krzyżowy rankingu, ta sama próbka co Sobol)",
+                 style={"fontSize": "11px", "fontWeight": "bold", "color": THEME["text_white"], "marginBottom": "8px"}),
+        dash_table.DataTable(
+            columns=[{"name": c, "id": c} for c in prcc_rows[0].keys()] if prcc_rows else [],
+            data=prcc_rows, style_header=datatable_style_header(), style_data=datatable_style_data(), style_cell=datatable_style_cell(),
+            style_data_conditional=[datatable_row_alt_rule()],
+        ),
+    ])
+
+    horizon_display = "od początku" if horizon_label == "since_inception" else horizon_label
+    status = html.Div(
+        f"Gotowe -- {sobol_result['n_runs']} przebiegów Sobola" + (f" + {morris_summary['n_runs']} Morrisa" if morris_summary else "") +
+        f", zapis {snapshot_id}, horyzont {horizon_display} ({horizon_days} sesji, dane wyłącznie {created_at.date()} → {forward_prices.index[-1].date() if len(forward_prices) else '?'}).",
+        style={"color": THEME["accent"]}
+    )
+    return results_layout, status
