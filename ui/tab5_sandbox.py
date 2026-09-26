@@ -286,7 +286,28 @@ def update_forward_tracker(snapshot_id, sb_alpha, sb_lambda, sb_nu, sb_gamma, sb
     created_at_full = record.get("created_at", "")
     created_at = created_at_full[:10] if created_at_full else "?"
     holding_days = snap.holding_days_since(record)
-    meta_info = f"Utworzono: {created_at}  •  {holding_days} dni w portfolio"
+    meta_info_text = f"Utworzono: {created_at}  •  {holding_days} dni w portfolio"
+
+    # Confirmed 2026-09-26: odznaka statusu nakładki RV zapisanej PRZY ZAPISIE tego
+    # snapshotu (data/snapshot_store.py "rv_overlay") -- ma pokazać, czy to co jest
+    # w pliku pochodzi z ręcznie zweryfikowanej theta, czy z niezwalidowanej wartości
+    # domyślnej użytej automatycznie, bo użytkownik nie klikał "ZNAJDŹ PARY" przy
+    # zapisie. Snapshoty sprzed tej funkcji (klucz nieobecny) nie pokazują nic --
+    # zero zmiany zachowania dla starych plików. To jest CZYSTO INFORMACYJNE: nie
+    # steruje wcale niezależnym, żywym przełącznikiem "toggle-sandbox-pair-overlay"
+    # poniżej, który dalej liczy swoją własną nakładkę na bieżąco.
+    rv_overlay = record.get("rv_overlay")
+    overlay_badge = None
+    if rv_overlay and rv_overlay.get("computed"):
+        n_pairs = len(rv_overlay.get("matched_pairs", []))
+        if rv_overlay.get("theta_source") == "user_reviewed":
+            overlay_badge = html.Span(f"  •  ✓ Nakładka RV przy zapisie: {n_pairs} par, θ={rv_overlay.get('theta')} (zweryfikowana)", style={"color": THEME["accent"]})
+        else:
+            overlay_badge = html.Span(f"  •  ⚠ Nakładka RV przy zapisie: {n_pairs} par, θ={rv_overlay.get('theta')} (domyślna, tymczasowa)", style={"color": THEME["orange"]})
+    elif rv_overlay and not rv_overlay.get("computed"):
+        overlay_badge = html.Span(f"  •  ⚠ Nakładka RV nie policzona przy zapisie ({rv_overlay.get('reason', '?')})", style={"color": THEME["text_dim"]})
+
+    meta_info = [meta_info_text, overlay_badge] if overlay_badge else meta_info_text
 
     orig_weights = pd.Series(record.get("final_weights", {}))
     tickers = list(orig_weights.index)

@@ -31,7 +31,10 @@ from engine.risk import compute_estrada_matrix, semideviation_ann_from_matrix
 from engine.optimizer import compute_asset_tps, run_stage2_inter_cluster_slsqp, run_optimization_with_singleton_split
 from engine.evaluation import evaluate_portfolio_performance
 from engine.returns import compute_composite_upside_row
-from engine.pairs import find_matched_pairs_for_overlay, apply_tilts_to_matched_pairs
+from engine.pairs import (
+    find_matched_pairs_for_overlay, apply_tilts_to_matched_pairs,
+    build_rv_overlay_record, rv_overlay_unavailable, DEFAULT_UNREVIEWED_THETA,
+)
 from data import snapshot_store as snap
 from data.market_data import fetch_universe_prices
 
@@ -336,9 +339,12 @@ def render_singleton_split_panel(results):
     State("store-stage4b-results", "data"),
     State("store-stage3-final-payload", "data"), State("store-stage4a-params", "data"),
     State("store-stage4a-tailrisk", "data"), State("store-snapshots-refresh", "data"),
+    State("store-pair-overlay-match-cache", "data"), State("input-overlay-theta", "value"),
+    background=True,
+    progress=[Output("snapshot-save-status", "children", allow_duplicate=True), Output("snapshot-save-status-stage4", "children", allow_duplicate=True)],
     prevent_initial_call=True
 )
-def save_snapshot_callback(_n_sandbox, _n_stage4, name_sandbox, name_stage4, stage4b_results, stage3_payload, stage4a_params, tailrisk, counter):
+def save_snapshot_callback(set_progress, _n_sandbox, _n_stage4, name_sandbox, name_stage4, stage4b_results, stage3_payload, stage4a_params, tailrisk, counter, match_cache, overlay_theta):
     """
     Confirmed (2026-09-18): ten sam zapis wywoływalny z DWÓCH miejsc --
     przycisk w Sandbox (istniejący) i nowy przycisk bezpośrednio w Rebalance
@@ -347,6 +353,32 @@ def save_snapshot_callback(_n_sandbox, _n_stage4, name_sandbox, name_stage4, sta
     portfel. Jedna funkcja, dwa Outputy statusu (po jednym na każdą
     zakładkę) -- ustalamy przez callback_context, który przycisk faktycznie
     kliknięto, i tej samej logiki/danych używamy niezależnie od źródła.
+
+    Confirmed (2026-09-26): SAVE PORTFOLIO teraz ZAWSZE zapisuje wynik nakładki
+    RV (engine/pairs.py, "Droga B"), niezależnie od tego, czy użytkownik
+    wcześniej kliknął "ZNAJDŹ PARY" w tej sesji dla tego portfela:
+      - Jeśli `store-pair-overlay-match-cache` ma już dopasowanie dla
+        DOKŁADNIE tego zestawu tickerów (sprawdzane po `all_selected_tickers`)
+        -- używamy go, z theta jaka aktualnie jest ustawiona na suwaku
+        (`theta_source="user_reviewed"`). Zero dodatkowego kosztu, zero
+        ponownego pobierania cen.
+      - Jeśli nie -- liczymy dopasowanie od zera, TU, przy samym zapisie
+        (ten sam koszt co ręczne kliknięcie "ZNAJDŹ PARY": ~10 lat cen +
+        pełny dwuetapowy test trwałości), z theta=DEFAULT_UNREVIEWED_THETA
+        na sztywno (`theta_source="default_unreviewed"`) -- świadomie
+        NIEZWALIDOWANA wartość placeholder, jawnie oznaczona jako taka w
+        zapisanym pliku, żeby Sandbox (i każdy inny czytelnik) nigdy nie
+        pomylił jej z celowo dobraną theta.
+    Stąd `background=True` na całym callbacku, nie tylko na "ZNAJDŹ PARY" --
+    SAVE PORTFOLIO może teraz czasem trwać tyle co ta druga operacja, więc
+    dostaje ten sam pasek postępu, zgodnie z ustaloną konwencją projektu
+    ("kosztowne operacje zawsze jako osobny przycisk z background=True i
+    raportowaniem postępu").
+
+    Nieudane liczenie nakładki (np. fetch cen się nie powiódł) NIGDY nie
+    blokuje zapisu samego portfela -- `rv_overlay_unavailable(reason)`
+    zapisuje jawny powód, a `final_weights` i reszta snapshotu zapisują się
+    normalnie.
     """
     ctx = dash.callback_context
     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
@@ -355,6 +387,9 @@ def save_snapshot_callback(_n_sandbox, _n_stage4, name_sandbox, name_stage4, sta
 
     def _both(msg):
         return (dash.no_update, msg) if from_stage4 else (msg, dash.no_update)
+
+    def _progress_both(msg):
+        set_progress(list(_both(msg)))
 
     if not stage4b_results or stage4b_results.get("error"):
         s1, s2 = _both(html.Span("Brak poprawnych wyników optymalizacji do zapisania.", style={"color": THEME["orange"]}))
@@ -377,6 +412,33 @@ def save_snapshot_callback(_n_sandbox, _n_stage4, name_sandbox, name_stage4, sta
     # poprawnie różnicować karę P_i między spółkami bez ponownego liczenia CDD z 5 lat historii.
     z_scores = {t: tailrisk["z"][t] for t in weights if tailrisk and t in tailrisk.get("z", {})}
 
+    # --- Nakładka RV: zawsze policzona, "reviewed" z cache albo "unreviewed" od zera ---
+    selected_tickers = sorted(t for t, w in weights.items() if w and w > 1e-9)
+    cache_hit = bool(match_cache) and sorted(match_cache.get("all_selected_tickers", [])) == selected_tickers
+
+    if len(selected_tickers) < 2:
+        rv_overlay = rv_overlay_unavailable("Za mało spółek z dodatnią wagą (<2) do sprawdzenia par.")
+    elif cache_hit:
+        theta_reviewed = overlay_theta if isinstance(overlay_theta, (int, float)) else 0.15
+        rv_overlay = build_rv_overlay_record(weights, match_cache, theta=theta_reviewed, theta_source="user_reviewed")
+    else:
+        _progress_both(f"Brak wcześniejszego dopasowania par dla tego portfela w tej sesji -- liczę od zera z domyślną theta={DEFAULT_UNREVIEWED_THETA} (tymczasowe, do czasu kalibracji)...")
+        try:
+            prices_df, valid_tickers = fetch_universe_prices(selected_tickers, period="10y")
+            if prices_df.empty or len(valid_tickers) < 2:
+                rv_overlay = rv_overlay_unavailable("Nie udało się pobrać wystarczająco długiej (10-letniej) historii cenowej.")
+            else:
+                def _report_progress(label, i, total):
+                    if label == "Etap 1: tanie sito":
+                        _progress_both(f"Nakładka RV -- tanie sito theta: kombinacja {i}/{total}...")
+                    else:
+                        _progress_both(f"Nakładka RV -- pełny test trwałości ({label}): para {i}/{total}...")
+                match_data = find_matched_pairs_for_overlay(weights, prices_df, theta=DEFAULT_UNREVIEWED_THETA, on_progress=_report_progress)
+                rv_overlay = build_rv_overlay_record(weights, match_data, theta=DEFAULT_UNREVIEWED_THETA, theta_source="default_unreviewed")
+        except Exception as e:
+            rv_overlay = rv_overlay_unavailable(f"Błąd liczenia nakładki: {e}")
+
+    _progress_both("Zapisuję portfel...")
     try:
         record = snap.save_snapshot(
             snapshot_name=snapshot_name or "",
@@ -385,14 +447,23 @@ def save_snapshot_callback(_n_sandbox, _n_stage4, name_sandbox, name_stage4, sta
             final_weights=weights,
             cluster_of=cluster_of,
             entry_prices=entry_prices,
-            z_scores=z_scores
+            z_scores=z_scores,
+            rv_overlay=rv_overlay,
         )
     except Exception as e:
         s1, s2 = _both(html.Span(f"Błąd zapisu: {str(e)}", style={"color": THEME["orange"]}))
         return s1, s2, dash.no_update
 
     spy_note = "" if "SPY" in entry_prices else " (nie udało się pobrać ceny SPY na benchmark)"
-    status = html.Span(f"Zapisano: \"{record['snapshot_name']}\" ({record['snapshot_id']}){spy_note}",
+    if not rv_overlay.get("computed"):
+        overlay_note = f" • nakładka RV nie policzona ({rv_overlay.get('reason', '?')})"
+    elif not rv_overlay["matched_pairs"]:
+        overlay_note = " • nakładka RV: brak dopasowanych par"
+    elif rv_overlay["theta_source"] == "user_reviewed":
+        overlay_note = f" • nakładka RV: {len(rv_overlay['matched_pairs'])} par, θ={rv_overlay['theta']} (zweryfikowana)"
+    else:
+        overlay_note = f" • nakładka RV: {len(rv_overlay['matched_pairs'])} par, θ={rv_overlay['theta']} (domyślna, tymczasowa)"
+    status = html.Span(f"Zapisano: \"{record['snapshot_name']}\" ({record['snapshot_id']}){spy_note}{overlay_note}",
                         style={"color": THEME["accent"], "fontWeight": "bold"})
     s1, s2 = _both(status)
     return s1, s2, (counter or 0) + 1
