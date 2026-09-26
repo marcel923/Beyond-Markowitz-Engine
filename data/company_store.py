@@ -77,7 +77,11 @@ import re
 from datetime import date, datetime
 from typing import Dict, List, Optional
 
-DEFAULT_HISTORY_DIR = "storage/company_history"
+# Test isolation (confirmed 2026-09-26): overridable via QT_STORAGE_ROOT --
+# see the matching note in data/snapshot_store.py for why. Unset -> "storage",
+# identical to before this existed.
+_STORAGE_ROOT = os.environ.get("QT_STORAGE_ROOT", "storage")
+DEFAULT_HISTORY_DIR = os.path.join(_STORAGE_ROOT, "company_history")
 VALID_HORIZONS = ("1M", "3M", "6M", "1Y")
 
 
