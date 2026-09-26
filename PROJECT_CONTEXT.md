@@ -3143,3 +3143,15 @@ Verified directly against the project's own real scenario (a snapshot with exact
 ### Prerequisites:
 * Python `>= 3.10`
 * Dependencies listed in `requirements.txt`:
+
+---
+
+**Kontynuacja dziennika w PROJECT_CONTEXT_2.md (od 2026-09-26).** Ten plik
+zrobił się bardzo długi, więc chronologiczny, append-only dziennik "Etap X"
+kontynuuje się od teraz w `PROJECT_CONTEXT_2.md` (ten sam katalog, te same
+zasady: nigdy nie edytować istniejących wpisów, tylko dopisywać nowe na
+końcu, pokazać projekt wpisu i czekać na potwierdzenie przed dopisaniem).
+Ten plik (`PROJECT_CONTEXT.md`) zostaje nietknięty i zamrożony jako
+archiwum -- Etap 1 do Etap 8c włącznie. Numeracja Etapów jest WSPÓLNA
+między obydwoma plikami (ciągła, nie zaczyna się od nowa) -- następny
+numer po Etap 8c to Etap 8d, w `PROJECT_CONTEXT_2.md`.
