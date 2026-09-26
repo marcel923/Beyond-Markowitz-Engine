@@ -6,3 +6,8 @@ venv/
 .DS_Store
 
 storage/callback_cache/
+
+# Disposable test-storage roots pointed to by QT_STORAGE_ROOT (see
+# data/snapshot_store.py) -- never meant to be committed.
+storage_test/
+storage_test*/

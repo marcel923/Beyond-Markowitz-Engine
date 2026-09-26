@@ -34,7 +34,11 @@ import os
 from datetime import date
 from typing import List, Optional
 
-DEFAULT_FILE_PATH = "storage/universe.json"
+# Test isolation (confirmed 2026-09-26): overridable via QT_STORAGE_ROOT --
+# see the matching note in data/snapshot_store.py for why. Unset -> "storage",
+# identical to before this existed.
+_STORAGE_ROOT = os.environ.get("QT_STORAGE_ROOT", "storage")
+DEFAULT_FILE_PATH = os.path.join(_STORAGE_ROOT, "universe.json")
 VALID_STATUSES = ("Active_Screened", "Watchlist")
 
 

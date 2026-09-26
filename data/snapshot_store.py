@@ -53,7 +53,18 @@ import pandas as pd
 
 from data.market_data import fetch_current_prices, fetch_price_history
 
-DEFAULT_STORAGE_DIR = "storage/portfolio_snapshots"
+# Test isolation (confirmed 2026-09-26): the whole storage tree's root is
+# overridable via QT_STORAGE_ROOT so a test/click-through session can point
+# at a disposable directory (e.g. "storage_test") instead of the real
+# "storage/" -- without this, manually clicking through the app to test
+# something writes real snapshot files that then have to be found and
+# deleted by hand. Unset (the normal running app) -> unchanged behavior,
+# defaults to "storage" exactly as before this existed. Same pattern
+# mirrored in data/company_store.py and data/universe_store.py; each module
+# resolves its own root independently (no new inter-module import) to keep
+# the existing data/ dependency shape untouched.
+_STORAGE_ROOT = os.environ.get("QT_STORAGE_ROOT", "storage")
+DEFAULT_STORAGE_DIR = os.path.join(_STORAGE_ROOT, "portfolio_snapshots")
 BENCHMARK_TICKER = "SPY"
 
 
