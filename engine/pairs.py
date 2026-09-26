@@ -2310,3 +2310,148 @@ def apply_post_solver_pair_overlay(
         "n_selected": match_data["n_selected"], "n_qualifying": match_data["n_qualifying"],
         "n_eligible": match_data["n_eligible"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Snapshot persistence of the post-solver pair overlay (confirmed 2026-09-26)
+# ---------------------------------------------------------------------------
+# Confirmed design: SAVE PORTFOLIO must ALWAYS record an overlay outcome,
+# whether or not the user explicitly clicked "ZNAJDŹ PARY" (Etap A) first in
+# this session. Two paths, distinguished by `theta_source`:
+#   "user_reviewed"     -- the expensive match-finding step (Etap A) was
+#                           already run this session for this exact ticker
+#                           set (cache hit in store-pair-overlay-match-cache);
+#                           uses whatever theta the user actually had dialed
+#                           in on the slider at save time.
+#   "default_unreviewed" -- no cache hit (user never clicked ZNAJDŹ PARY for
+#                           this portfolio). The caller (ui/tab4_rebalance.py)
+#                           runs the expensive step itself, inline, at save
+#                           time, with DEFAULT_UNREVIEWED_THETA -- an
+#                           arbitrary, NOT-yet-calibrated placeholder theta,
+#                           explicitly flagged as such in the saved record so
+#                           it is never mistaken for a deliberately chosen
+#                           value. Confirmed by the project owner: replace
+#                           this default once proper theta-calibration
+#                           testing (Etap open priority #2) says what value
+#                           is actually optimal.
+#
+# `build_rv_overlay_record` is the single place that assembles the exact
+# dict shape persisted as the new `rv_overlay` key in a saved snapshot
+# (data/snapshot_store.py). It merges the t-statistic (only present in
+# `match_data["matched_pairs_info"]`, from the expensive Etap A step) with
+# the before/after weights (only present in `tilt_result["applied_pairs"]`,
+# from the cheap Etap B step) -- neither one on its own carries both, and
+# every caller needs both, so the merge lives here once instead of being
+# duplicated in ui/tab4_rebalance.py and ui/tab5_sandbox.py.
+DEFAULT_UNREVIEWED_THETA = 0.4  # confirmed placeholder (2026-09-26) -- explicitly
+                                 # NOT validated by calibration testing; every
+                                 # record that used it is marked theta_source=
+                                 # "default_unreviewed" so it is never read as
+                                 # a deliberate choice. Revisit once Etap open
+                                 # priority #2 (MATCH_MIN_WINDOWS/T_STATISTIC +
+                                 # theta calibration on the real universe) lands.
+RV_OVERLAY_SCHEMA_VERSION = 1
+
+
+def build_rv_overlay_record(
+    weights: Dict[str, float], match_data: Dict[str, object], theta: float, theta_source: str,
+) -> Dict[str, object]:
+    """
+    Assembles the exact dict persisted as a saved snapshot's `rv_overlay` key.
+
+    `match_data`: the full return of `find_matched_pairs_for_overlay` (either
+    freshly computed, or read back from `store-pair-overlay-match-cache` if
+    the user already ran Etap A this session for this exact ticker set).
+    `theta_source` must be `"user_reviewed"` or `"default_unreviewed"` --
+    the caller decides which, based on whether `match_data` came from a
+    session cache hit or a fresh call made at save time.
+
+    Returns (see data/snapshot_store.py's module docstring for the full
+    snapshot shape this nests inside):
+        {
+            "schema_version": 1,
+            "computed": True,
+            "theta": <float>,
+            "theta_source": "user_reviewed" | "default_unreviewed",
+            "matched_pairs": [
+                {"ticker_a", "ticker_b", "t_statistic", "z_score",
+                 "weight_a_before", "weight_a_after",
+                 "weight_b_before", "weight_b_after"}, ...
+            ],
+            "unmatched_with_alternative": [...],   # as returned by find_matched_pairs_for_overlay
+            "n_selected": int, "n_qualifying": int, "n_eligible": int,
+        }
+
+    A snapshot with ZERO matched pairs that day is a real, valid outcome
+    (`matched_pairs: []`, `computed: True`) -- distinct from `computed: False`
+    (the computation itself failed/was skipped, see `rv_overlay_unavailable`
+    below) and distinct from the key being absent entirely (a snapshot saved
+    before this feature existed). Sandbox code must check for absence and for
+    `computed` separately -- never assume presence of the key implies pairs
+    were found.
+    """
+    if theta_source not in ("user_reviewed", "default_unreviewed"):
+        raise ValueError(f"theta_source must be 'user_reviewed' or 'default_unreviewed', got {theta_source!r}")
+
+    matched_pairs_info = match_data.get("matched_pairs_info", [])
+    tilt_result = apply_tilts_to_matched_pairs(weights, matched_pairs_info, theta=theta)
+    t_stat_by_pair = {(p["ticker_a"], p["ticker_b"]): p["t_statistic"] for p in matched_pairs_info}
+
+    matched_pairs = []
+    for p in tilt_result["applied_pairs"]:
+        key = (p["ticker_a"], p["ticker_b"])
+        matched_pairs.append({
+            "ticker_a": p["ticker_a"], "ticker_b": p["ticker_b"],
+            "t_statistic": t_stat_by_pair.get(key),
+            "z_score": p["z_score"],
+            "weight_a_before": p["weight_a_before"], "weight_a_after": p["weight_a_after"],
+            "weight_b_before": p["weight_b_before"], "weight_b_after": p["weight_b_after"],
+        })
+
+    return {
+        "schema_version": RV_OVERLAY_SCHEMA_VERSION,
+        "computed": True,
+        "theta": theta,
+        "theta_source": theta_source,
+        "matched_pairs": matched_pairs,
+        "unmatched_with_alternative": match_data.get("unmatched_with_alternative", []),
+        "n_selected": match_data.get("n_selected", 0),
+        "n_qualifying": match_data.get("n_qualifying", 0),
+        "n_eligible": match_data.get("n_eligible", 0),
+    }
+
+
+def rv_overlay_unavailable(reason: str) -> Dict[str, object]:
+    """
+    The explicit "we tried, it failed/couldn't run" record -- e.g. price
+    history fetch failed, or fewer than 2 tickers had positive weight.
+    Distinct from a snapshot saved before this feature existed (key absent)
+    and from a genuine zero-pairs-found result (`computed: True`,
+    `matched_pairs: []`) -- SAVE PORTFOLIO must still succeed and persist the
+    portfolio itself even when this fires; a failed overlay is never a
+    reason to fail the whole save.
+    """
+    return {"schema_version": RV_OVERLAY_SCHEMA_VERSION, "computed": False, "reason": reason}
+
+
+def apply_rv_overlay_weights(final_weights: Dict[str, float], rv_overlay: Optional[Dict[str, object]]) -> Dict[str, float]:
+    """
+    Reconstructs the post-overlay weight vector from a saved snapshot's
+    `final_weights` (raw solver output, unchanged meaning -- always the
+    key used going forward) plus its `rv_overlay` block, with NO re-fetch of
+    price data: every matched pair's `weight_*_after` was already computed
+    and frozen at save time, so this is pure dict arithmetic. Tickers not
+    part of any matched pair keep their original `final_weights` value
+    unchanged. Safe to call on ANY snapshot record, old or new: a missing or
+    `computed: False` `rv_overlay` (or None) returns `final_weights`
+    untouched -- callers never need their own presence check first.
+    """
+    if not rv_overlay or not rv_overlay.get("computed"):
+        return dict(final_weights)
+    result = dict(final_weights)
+    for p in rv_overlay.get("matched_pairs", []):
+        if p["ticker_a"] in result:
+            result[p["ticker_a"]] = p["weight_a_after"]
+        if p["ticker_b"] in result:
+            result[p["ticker_b"]] = p["weight_b_after"]
+    return result

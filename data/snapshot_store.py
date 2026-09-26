@@ -24,10 +24,49 @@ storage/portfolio_snapshots/portfolio_{snapshot_id}.json, one JSON OBJECT
         "created_at":         "2026-07-31T14:30:05",
         "parameters":         {"lambda": 0.8, "gamma": 1.5, ...},
         "fundamental_inputs": [{"Ticker": "AAPL", ...}, ...],   # full Stage 3 payload
-        "final_weights":      {"AAPL": 0.18, "MSFT": 0.12, ...},
+        "final_weights":      {"AAPL": 0.18, "MSFT": 0.12, ...},   # RAW solver output --
+                                                                     # unchanged meaning even
+                                                                     # after rv_overlay below
+                                                                     # was added; never the
+                                                                     # post-tilt weights
         "cluster_of":         {"AAPL": 1, "MSFT": 2, ...},
-        "entry_prices":       {"AAPL": 227.5, "MSFT": 415.2, ..., "SPY": 560.1}
+        "entry_prices":       {"AAPL": 227.5, "MSFT": 415.2, ..., "SPY": 560.1},
+        "rv_overlay":         {...}   # confirmed 2026-09-26 -- see below
     }
+
+Confirmed 2026-09-26: `rv_overlay` -- the post-solver Relative Value pair
+overlay (engine/pairs.py, "Droga B") outcome, ALWAYS computed and persisted
+at save time from now on, whether or not the user explicitly ran the
+expensive match-finding step ("ZNAJDŹ PARY") first in the same session. See
+`engine.pairs.build_rv_overlay_record` / `rv_overlay_unavailable` for the
+exact shape and `engine.pairs.apply_rv_overlay_weights` for how to
+reconstruct the post-overlay weight vector from it plus `final_weights`
+(pure dict merge, zero re-fetch). Three distinguishable states, checked in
+this order by any reader (Sandbox above all):
+  1. Key ABSENT entirely       -> snapshot saved before this feature existed.
+                                   Treat exactly like `computed: False` below.
+  2. `"computed": False`       -> overlay computation was attempted and
+                                   failed/was skipped (e.g. price fetch
+                                   failed, <2 tickers with positive weight);
+                                   the portfolio itself still saved fine.
+                                   `"reason"` holds a human-readable why.
+  3. `"computed": True`        -> `"matched_pairs"` may legitimately be an
+                                   EMPTY list (zero qualifying pairs that
+                                   day) -- that is a real result, not a
+                                   missing one. `"theta_source"` is either
+                                   `"user_reviewed"` (the user had already
+                                   run "ZNAJDŹ PARY" this session for this
+                                   exact ticker set; `"theta"` is whatever
+                                   they had set) or `"default_unreviewed"`
+                                   (no prior click -- the match-finding step
+                                   ran automatically at save time with
+                                   `engine.pairs.DEFAULT_UNREVIEWED_THETA`,
+                                   an explicit, NOT-yet-calibrated
+                                   placeholder -- surface this to the user
+                                   wherever the overlay is shown, never treat
+                                   it as a deliberate choice).
+Old snapshots (state 1) and any code reading this field MUST degrade
+gracefully -- same established pattern as the `z_scores` field below.
 
 Writes are done via write-to-temp-then-os.replace to avoid leaving a truncated/corrupt
 file behind if the process is killed mid-write.
@@ -126,6 +165,7 @@ def save_snapshot(
     cluster_of: dict,
     entry_prices: dict,
     z_scores: Optional[dict] = None,
+    rv_overlay: Optional[dict] = None,
     storage_dir: str = DEFAULT_STORAGE_DIR,
 ) -> dict:
     """
@@ -138,6 +178,15 @@ def save_snapshot(
     before this field existed simply won't have it; callers should treat a missing/absent
     z_scores dict as "no frozen risk data available" and degrade gracefully (e.g. assume
     Z=0 / P_i=1 baseline), not crash.
+
+    `rv_overlay` (confirmed 2026-09-26, optional): the post-solver Relative Value
+    pair overlay outcome, built by `engine.pairs.build_rv_overlay_record` or
+    `engine.pairs.rv_overlay_unavailable`. The caller (ui/tab4_rebalance.py)
+    is expected to ALWAYS pass one of the two from now on -- this parameter
+    stays optional/defaulted only so old callers/tests that predate this
+    field keep working. See this module's docstring above for the full
+    three-state shape (absent / computed:False / computed:True) and how
+    readers must handle each.
     """
     base_id = make_snapshot_id()
     existing_ids = {s.get("snapshot_id") for s in _read_all(storage_dir)}
@@ -158,6 +207,13 @@ def save_snapshot(
         "entry_prices": entry_prices,
         "z_scores": z_scores or {},
     }
+    if rv_overlay is not None:
+        # Key intentionally OMITTED (not set to a synthesized placeholder) when the
+        # caller passes nothing, so a caller written before this field existed
+        # produces a record identical in shape to before -- readers see state 1
+        # ("key absent") exactly like a genuinely pre-feature snapshot, per the
+        # three-state contract documented in this module's docstring above.
+        record["rv_overlay"] = rv_overlay
     _write_one(record, storage_dir)
     return record
 
