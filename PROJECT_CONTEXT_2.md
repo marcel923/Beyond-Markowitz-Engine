@@ -130,3 +130,90 @@ osobnym branchu `test-storage-isolation-2026-09-26` (od `main`, nie od
 https://github.com/marcel923/Beyond-Markowitz-Engine/pull/2.
 
 ---
+
+### 8f. Baseline regresji solvera z Etap 8a potwierdzony (complete)
+
+Confirmed: właściciel projektu zatwierdził nowe wartości regresji solvera z
+Etap 8a jako punkt odniesienia na przyszłość -- NVDA=0.35, AVGO=0.35,
+HPE=0.2463, LYC.AX=0.0537 (tickery AVGO/NVDA/HPE/LYC.AX, seed=5). Poprzedni
+baseline (HPE=0.246, LYC.AX=0.054, sprzed uniwersalnego dyskonta gamma na
+mu_i) jest odtąd nieaktualny. `CLAUDE.md` zaktualizowany.
+
+---
+
+### 8g. Rozwój zakładki "ANALIZA SOBOLA" -- propozycja, w trakcie omawiania (open)
+
+Właściciel projektu poprosił o propozycję rozwoju zakładki "ANALIZA SOBOLA"
+(priorytet #3 z poprzedniej listy "Otwarte priorytety") -- trzy konkretne
+kierunki, żadny jeszcze nie zaimplementowany, wszystkie pokazane właścicielowi
+projektu do decyzji przed pisaniem kodu:
+
+1. **Panel stabilności parametrów vs Sortino.** `run_sobol_batch()` w
+   `engine/sobol_analysis.py` już liczy `raw_sample`/`raw_outputs` (pełna
+   macierz N×18 próbek × 8 parametrów + CAGR/Sortino/MaxDrawdown per próbka)
+   i trzyma je server-side (świadomie NIE wysyłane do przeglądarki przez
+   `dcc.Store` -- zbyt duże na round-trip JSON), ale dziś te surowe dane nie
+   są wizualizowane w ogóle poza zagregowanymi wskaźnikami Sobol/PRCC.
+   Propozycja: siatka małych wykresów rozproszenia (8 paneli, po jednym na
+   parametr) -- x = wartość parametru w tej próbce, y = Sortino tej próbki,
+   z top ~10% próbek (najwyższy Sortino) podświetlonych innym kolorem na tle
+   reszty wyszarzonej. Ciasny klaster podświetlonych punktów w wąskim
+   zakresie danego parametru = stabilne, wiarygodne optimum; rozrzucone po
+   całej osi = brak realnego sygnału (najlepszy wynik to szum próbki, nie
+   coś do ufania). Zero dodatkowych wywołań solvera -- czysto serwerowa
+   wizualizacja już policzonych danych, budowana w tym samym callbacku,
+   który dziś je odrzuca po zbudowaniu wykresów S1/ST.
+
+2. **R_f / hurdle rate: przemianowanie + opcjonalne auto-pobieranie.**
+   Zweryfikowane w kodzie: matematycznie R_f i MAR Sortino są już
+   poprawnie rozdzielone -- `engine/sobol_analysis.py` liczy
+   `sortino = (mean_ann - 0.0) / downside_dev`, MAR na sztywno 0.0,
+   NIGDY nie powiązane z przemiatanym parametrem `rf` (świadoma decyzja z
+   Etap 8b, udokumentowana wprost w kodzie). Problem jest wyłącznie w
+   etykiecie: `ui/components.py` (`STAGE4A_PARAMS_CONFIG`, pole "rf")
+   nazywa to na karcie suwaka po prostu "Risk-Free Rate" -- mylące, skoro w
+   `engine/optimizer.py` ten sam parametr jest jawnie "hurdle rate" w
+   liczniku TPS (`(w.mu - Rf)/...`), nie stopa odniesienia dla Sortino.
+   Propozycja: przemianować widoczną etykietę na "Stopa referencyjna /
+   hurdle (R_f)" wszędzie gdzie się pojawia (karta parametru, suwak w
+   Sandboxie), i dopisać krótkie zdanie na zakładce Sobol wprost mówiące,
+   że Sortino liczy się względem MAR=0, niezależnie od ustawienia R_f.
+   Co do auto-pobierania: w kodzie jest już komentarz "Ręczne wejście, brak
+   automatycznego pobierania ^TNX (zgodnie z zasadą 'dane manualne')" --
+   ale ta zasada nigdzie nie jest udokumentowana w PROJECT_CONTEXT/CLAUDE.md,
+   więc nie zakładam jej uzasadnienia. Zweryfikowane: `^TNX` na Yahoo
+   Finance (dokładnie to źródło, którego cała reszta projektu już używa
+   przez `yfinance` w `data/market_data.py`) zwraca rentowność 10Y
+   bezpośrednio w procentach (dziś ok. 5.22-5.23%, zgadza się z tym co
+   podał właściciel projektu) -- żadnego przeliczania jednostek, żadnej
+   nowej integracji. Otwarte pytanie do decyzji: (a) zostawić ręczne
+   wejście jako domyślne, dodać obok przycisk "pobierz aktualną ^TNX" jako
+   wygodę opcjonalną (nigdy nie nadpisuje cicho) -- najbliższe istniejącej
+   zasadzie; czy (b) dla zakładki Sobol konkretnie, przy uruchamianiu
+   analizy na starym zapisie, pobierać rentowność 10Y Z DNIA UTWORZENIA
+   TEGO ZAPISU zamiast dzisiejszej -- poprawniejsze dla spójności
+   walk-forward, ale wymaga historycznego szeregu ^TNX, nie tylko
+   ostatniej ceny, więc trochę więcej pracy. Czeka na wybór właściciela
+   projektu.
+
+3. **Panel "Połączone Portfolio".** Potwierdzone wcześniej (przed Etap 8b),
+   nigdy nie zbudowane -- właściciel projektu ręcznie wybiera i ustawia
+   kolejność kilku zapisanych snapshotów, a śledzona krzywa equity po
+   prostu PODMIENIA się na kolejny zapis w dniu jego utworzenia (żadnego
+   wygładzania/mieszania między nimi). Celowo odseparowane od Sobola (Sobol
+   nigdy nie skleja zapisów -- pomyliłoby to efekt parametru z efektem
+   czasu rynkowego, patrz `engine/sobol_analysis.py` docstring). Propozycja:
+   nowa zakładka-siostra obok "FORWARD TRACKER"/"ANALIZA SOBOLA" w
+   Sandboxie -- lista zapisów z drag-to-reorder (albo prostszy numerowany
+   wybór, jeśli drag-and-drop w Dash okaże się niepotrzebnie kosztowny),
+   każdy z własną datą utworzenia jako punktem podmiany; renderowana krzywa
+   equity to konkatenacja rzeczywistych, już zrealizowanych zwrotów forward
+   każdego snapshotu między jego datą utworzenia a datą utworzenia
+   następnego (albo dziś, dla ostatniego) -- bez interpolacji/wygładzania na
+   styku, zgodnie z wcześniejszym ustaleniem.
+
+Żadna z trzech rzeczy jeszcze nie zaimplementowana -- czeka na wybór
+właściciela projektu (w szczególności co do (2b) auto-pobierania R_f) i
+ogólne potwierdzenie zakresu przed pisaniem kodu.
+
+---
