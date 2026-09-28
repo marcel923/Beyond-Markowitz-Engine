@@ -265,3 +265,54 @@ Pozostałe z Etap 8g wciąż otwarte: (1) panel stabilności parametrów vs
 Sortino, (3) panel "Połączone Portfolio".
 
 ---
+
+### 8i. Panel stabilności parametrów vs Sortino w zakładce ANALIZA SOBOLA (complete)
+
+Confirmed follow-up: realizuje punkt 1 propozycji z Etap 8g. Przed
+implementacją pokazane właścicielowi projektu dokładne wyjaśnienie
+mechaniki na dwóch konkretnych przykładach (parametr stabilny vs
+niestabilny, z liczbami) -- zatwierdzone bez zmian co do koncepcji, z
+trzema doprecyzowaniami: próg podświetlenia jako wybór z 4 opcji
+(10/7.5/5/2.5%, nie suwak), tylko dla Sortino na razie (nie CAGR/MaxDrawdown),
+i dopisanie liczbowego wskaźnika stabilności pod każdym wykresem.
+
+**Mechanika**: dla każdego z 8 parametrów solvera, wykres rozproszenia
+(wartość parametru w danym przebiegu Sobola, Sortino tego przebiegu) po
+wszystkich przebiegach ostatniej analizy, z top N% (wybór: 10/7.5/5/2.5%,
+`dcc.RadioItems`) podświetlonymi jednym kolorem na tle reszty wyszarzonej.
+Pod każdym mini-wykresem liczbowy werdykt: zakres wartości parametru wśród
+top N% jako % pełnej szerokości przemiatanego zakresu -- STABILNE (<25%,
+zielone), UMIARKOWANE (25-60%, bursztynowe), NIESTABILNE (>60%, czerwone).
+Jawnie udokumentowane w kodzie i w rozmowie z właścicielem projektu: to
+pokazuje KORELACJĘ, nie przyczynowość (wszystkie 8 parametrów zmienia się
+naraz w jednej próbce Saltelli) -- uzupełnienie istniejących S1/ST/PRCC,
+nie ich zamiennik.
+
+**Zero dodatkowych obliczeń solvera**: `run_sobol_batch` w
+`engine/sobol_analysis.py` już liczy `raw_sample`/`raw_outputs` dla
+każdego z N×18 przebiegów -- wcześniej używane tylko do zbudowania
+zagregowanych wykresów S1/ST, potem odrzucane. Nowy moduł-poziomu cache
+`_LAST_SOBOL_RAW` w `ui/tab5_sandbox.py` trzyma surowe dane ostatniego
+przebiegu SERVER-SIDE (nigdy nie wysyłane do przeglądarki -- zgodnie z
+własnym docstringiem `run_sobol_batch`, zbyt duże na round-trip JSON), więc
+zmiana progu podświetlenia przerysowuje panel natychmiast przez osobny,
+tani callback, bez ponownego uruchamiania analizy. Wiersze
+`solver_success=False` są z tego panelu CAŁKOWICIE wykluczone (nie
+median-imputowane jak w matematyce dekompozycji wariancji Sobola) -- sztuczny
+punkt medianowy zniekształcałby wizualnie to, gdzie faktycznie klastrują
+się zwycięskie przebiegi.
+
+Zweryfikowane na syntetycznym zbiorze danych (Sortino skonstruowane tak,
+żeby realnie zależało WYŁĄCZNIE od lambda, reszta 7 parametrów -- czysty
+szum): lambda poprawnie wraca jako STABILNE z ciasnym zakresem top-10%
+(14% pełnej szerokości), wszystkie pozostałe 7 parametrów poprawnie wraca
+jako NIESTABILNE (~99-100% pełnej szerokości) -- potwierdza że mechanizm
+faktycznie odróżnia realny sygnał od szumu, nie tylko wygląda sensownie.
+Też zweryfikowane: przypadki brzegowe (mało poprawnych przebiegów, małe N),
+`py_compile`, pełny `import app` bez kolizji ID callbacków. Solver i
+matematyka Sortino nietknięte. PR:
+https://github.com/marcel923/Beyond-Markowitz-Engine/pull/6.
+
+Pozostały z Etap 8g: (3) panel "Połączone Portfolio".
+
+---
