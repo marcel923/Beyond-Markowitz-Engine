@@ -29,7 +29,7 @@ from engine.sobol_analysis import (
     run_morris_screen, run_sobol_batch, estimate_run_cost, PARAM_ORDER, DEFAULT_PARAM_RANGES, HORIZON_DAYS,
 )
 from data import snapshot_store as snap
-from data.market_data import fetch_universe_prices
+from data.market_data import fetch_universe_prices, fetch_treasury_yield_on_date
 
 # NOTE (2026-09-07, Etap 3 follow-up): the panel this module renders into
 # (panel-stage4b-tracker-container) used to be gated behind Stage 3
@@ -56,6 +56,52 @@ def load_snapshot_list(_):
     options = [{"label": f"{s['snapshot_name']}  ({s['snapshot_id']})", "value": s["snapshot_id"]} for s in snapshots]
     value = options[0]["value"] if options else None
     return options, value, options, value
+
+
+@app.callback(
+    Output("slider-sb-rf", "value"), Output("sb-rf-autofetch-note", "children"),
+    Input("dropdown-snapshot-select", "value"),
+    prevent_initial_call=True
+)
+def autofetch_sandbox_rf(snapshot_id):
+    """
+    Confirmed 2026-09-28 (Etap 8h): auto-wypełnia R_f/hurdle rate w Sandboxie
+    rzeczywistą rentownością 10Y (^TNX) NA DZIEŃ UTWORZENIA analizowanego
+    zapisu -- zamiast statycznego 0.045 -- bo analizując stary snapshot
+    właściciel projektu nie pamięta/nie zna z pamięci, jaka była wtedy
+    stopa. Na głównej zakładce Rebalance (input-rf) NIC się nie zmienia --
+    tam portfel powstaje "dziś", więc ręczne wejście dzisiejszej wartości
+    zostaje.
+
+    Suwak zostaje suwakiem -- to tylko wypełnia jego wartość PO wyborze
+    zapisu, właściciel projektu może ją dalej ręcznie nadpisać w dowolnym
+    momencie (zgodnie z ustaloną zasadą "dane manualne" -- to wygoda z
+    sensownym domyślnym punktem startowym, nie coś co cicho nadpisuje jego
+    decyzję).
+
+    Celowo NIE dotyka zakresu przeszukiwania `rf` w gridzie zakładki ANALIZA
+    SOBOLA (sobol-range-rf-min/max, engine.sobol_analysis.DEFAULT_PARAM_RANGES)
+    -- to osobna, świadomie szeroka, płaska metodyka sweepu wrażliwości
+    (patrz Etap 8g), a nie coś co powinno się cicho przesuwać per-snapshot.
+
+    Nie dotyka W OGÓLE definicji Sortino w engine/sobol_analysis.py -- ta
+    zostaje na sztywno MAR=0.0, celowo niepowiązana z R_f (Etap 8b).
+    """
+    if not snapshot_id:
+        return dash.no_update, ""
+
+    record = snap.get_snapshot(snapshot_id)
+    if not record:
+        return dash.no_update, ""
+
+    created_at_str = (record.get("created_at") or "")[:10]
+    if not created_at_str:
+        return dash.no_update, ""
+
+    yield_frac = fetch_treasury_yield_on_date(created_at_str)
+    if yield_frac is None:
+        return dash.no_update, f"⚠ Nie udało się pobrać ^TNX na dzień {created_at_str} -- zostaje poprzednia/domyślna wartość, ustaw ręcznie jeśli chcesz."
+    return round(yield_frac, 4), f"✓ Auto: rentowność 10Y (^TNX) na dzień utworzenia zapisu ({created_at_str}): {yield_frac*100:.2f}% -- można nadpisać ręcznie."
 
 
 @app.callback(
@@ -650,6 +696,34 @@ def render_sandbox_pair_overlay_tilts(match_cache, theta, manual_weights_raw, sb
 # JEDNYM, zamrożonym zapisie i JEDNYM horyzoncie na raz -- patrz pełne
 # uzasadnienie projektowe w engine/sobol_analysis.py.
 # ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("sobol-rf-hint", "children"),
+    Input("dropdown-sobol-snapshot", "value"),
+)
+def show_sobol_rf_hint(snapshot_id):
+    """
+    Confirmed 2026-09-28 (Etap 8h): pokazuje rzeczywistą rentowność 10Y
+    (^TNX) na dzień utworzenia wybranego zapisu jako CZYSTY KONTEKST --
+    celowo NIE zmienia automatycznie `sobol-range-rf-min`/`-max` poniżej.
+    Zakres przeszukiwania rf w Sobolu zostaje świadomie szeroki i płaski
+    (DEFAULT_PARAM_RANGES, Etap 8g) -- to osobna decyzja metodologiczna,
+    którą właściciel projektu może zmienić ręcznie w gridzie, patrząc na tę
+    podpowiedź, ale nie robimy tego za niego cicho.
+    """
+    if not snapshot_id:
+        return ""
+    record = snap.get_snapshot(snapshot_id)
+    if not record:
+        return ""
+    created_at_str = (record.get("created_at") or "")[:10]
+    if not created_at_str:
+        return ""
+    yield_frac = fetch_treasury_yield_on_date(created_at_str)
+    if yield_frac is None:
+        return f"(nie udało się pobrać ^TNX na dzień {created_at_str})"
+    return f"Rentowność 10Y (^TNX) na dzień utworzenia zapisu: {yield_frac*100:.2f}% -- kontekst, nie zmienia zakresu rf poniżej."
+
 
 @app.callback(
     Output("sobol-horizon-availability-note", "children"),

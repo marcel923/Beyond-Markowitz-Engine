@@ -1261,8 +1261,9 @@ app.layout = html.Div(style={
                                 html.Label("MAX SINGLE WEIGHT (w_max)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
                                 dcc.Slider(id="slider-sb-wmax", min=0.05, max=1.0, step=0.05, value=0.30, marks={0.05: "5%", 0.3: "30%", 0.6: "60%", 1.0: "100%"}, tooltip={"placement": "bottom", "always_visible": True}),
 
-                                html.Label("RISK-FREE RATE — hurdle rate (R_f)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
+                                html.Label("STOPA REFERENCYJNA / HURDLE RATE (R_f)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
                                 dcc.Slider(id="slider-sb-rf", min=0.0, max=0.25, step=0.005, value=0.045, marks={0.0: "0%", 0.10: "10%", 0.25: "25%"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                html.Div(id="sb-rf-autofetch-note", style={"fontSize": "9px", "color": THEME["text_dim"], "marginTop": "4px", "fontStyle": "italic"}),
 
                                 html.Label("N_ref — próg pokrycia analityków (A_i)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
                                 dcc.Slider(id="slider-sb-nref", min=3, max=30, step=1, value=8, marks={3: "3", 15: "15", 30: "30"}, tooltip={"placement": "bottom", "always_visible": True}),
@@ -1376,6 +1377,7 @@ app.layout = html.Div(style={
                         html.Div(children=[
                             html.Div("ZAPIS (SNAPSHOT)", style={"fontSize": "10px", "color": THEME["text_label"], "marginBottom": "5px"}),
                             dcc.Dropdown(id="dropdown-sobol-snapshot", placeholder="Wybierz zapisany portfel...", style={"color": "#000"}),
+                            html.Div(id="sobol-rf-hint", style={"fontSize": "9px", "color": THEME["text_dim"], "marginTop": "4px", "fontStyle": "italic"}),
                         ]),
                         html.Div(children=[
                             html.Div("HORYZONT PRZYSZŁY", style={"fontSize": "10px", "color": THEME["text_label"], "marginBottom": "5px"}),
