@@ -381,3 +381,59 @@ ID callbacków, na świeżej gałęzi po cherry-picku (nie tylko przed nim).
 Pozostały z Etap 8g: (3) panel "Połączone Portfolio".
 
 ---
+
+### Etap 8k. Naprawa konfliktu duplikatu Output (slider-sb-rf.value) + nowy audyt server-side (complete)
+
+Błąd zgłoszony przez właściciela zaraz po zmergowaniu PR #7 (Etap 8j):
+przeglądarka pokazywała czerwony błąd Dasha "Output 6 (slider-sb-rf.value)
+is already in use", nic w Sandboksie nie reagowało (żaden suwak, żaden
+przycisk, spółki się nie ładowały -- cała strona nie renderowała layoutu
+poprawnie po tym błędzie).
+
+**Przyczyna:** nowy callback `apply_custom_sandbox_slider_value` (Etap 8j)
+ma `Output("slider-sb-rf", "value")` w swojej liście 24 outputów -- ale
+`slider-sb-rf.value` jest JUŻ Outputem innego, wcześniejszego callbacku,
+`autofetch_sandbox_rf` (Etap 8h, uzupełnia rentowność ^TNX przy zmianie
+zapisu). Dash pozwala na to WYŁĄCZNIE gdy wszystkie-oprócz-jednej rejestracje
+tego samego (id, property) mają `allow_duplicate=True` -- tu żadna nie
+miała.
+
+**Ważne odkrycie przy okazji naprawy:** ten konkretny typ błędu (duplikat
+Output bez `allow_duplicate`) NIE wywala się ani na `python3 -m py_compile`,
+ani na `python3 -c "import app"`, ani nawet na realnym starcie serwera
+(`app.run()`) -- sprawdzone bezpośrednio na minimalnym przykładzie Dash: te
+wszystkie trzy rzeczy przechodzą bezobjawowo. Walidacja jest WYŁĄCZNIE po
+stronie przeglądarki (`dash-renderer` dostaje pełną listę callbacków przez
+`/_dash-dependencies` i sam wykrywa konflikt) -- czyli KAŻDA moja dotychczasowa
+"zweryfikowane: `import app` bez kolizji ID callbacków" w poprzednich wpisach
+tego dziennika NIE łapała tej klasy błędu, tylko literalne kolizje ID
+komponentów w layoutcie. Naprawione dwutorowo:
+1. Poprawka: `allow_duplicate=True` na wszystkich 24 outputach
+   `apply_custom_sandbox_slider_value` (ten callback rejestruje się PO
+   `autofetch_sandbox_rf`, więc to on musi mieć `allow_duplicate=True`, nie
+   odwrotnie).
+2. Nowy `scripts/check_duplicate_outputs.py` -- odtwarza tę samą walidację
+   co `dash-renderer`, czytając `app._callback_list` (to samo źródło co
+   `/_dash-dependencies`) zamiast czekać na przeglądarkę. Uruchomiony po
+   naprawie: 0 konfliktów wśród 216 unikalnych targetów Output w całej
+   aplikacji. Zweryfikowany też negatywnie -- uruchomiony na kodzie SPRZED
+   poprawki, poprawnie zgłasza dokładnie `slider-sb-rf.value` jako jedyny
+   konflikt, więc audyt faktycznie łapie ten błąd, nie tylko wygląda
+   sensownie. Dopisany do Konwencji: uruchamiać po KAŻDEJ zmianie/dodaniu
+   `@app.callback`.
+
+**Drugie odkrycie przy okazji:** środowisko weryfikacyjne miało domyślnie
+zainstalowany Dash 4.4.1 -- dokładnie tę gałąź, przed którą ostrzega komentarz
+w `requirements.txt` (dcc.Slider/dcc.Dropdown przepisane od zera w 4.x, custom
+CSS przestaje trafiać). Doinstalowany Dash 3.4.0 (w zakresie `>=3.3,<4.0`) i
+cała weryfikacja (poprawka + audyt duplikatów) powtórzona pod właściwą wersją.
+Dopisane do Konwencji: sprawdzać wersję Dasha przed weryfikacją.
+
+Ta poprawka, razem z nowym skryptem, poszła na nową gałąź cięta od świeżego
+`origin/main` (PR #7 był już zmergowany, zanim zdążyłem wypchnąć tę
+poprawkę -- ta sama zasada z Etap 8j zastosowana ponownie). PR:
+https://github.com/marcel923/Beyond-Markowitz-Engine/pull/8.
+
+Pozostały z Etap 8g: (3) panel "Połączone Portfolio".
+
+---
