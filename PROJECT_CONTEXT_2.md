@@ -316,3 +316,68 @@ https://github.com/marcel923/Beyond-Markowitz-Engine/pull/6.
 Pozostały z Etap 8g: (3) panel "Połączone Portfolio".
 
 ---
+
+### Etap 8j. CAGR-owy bliźniak panelu stabilności, "najlepsza kombinacja" i własne wartości w Sandboxie (complete)
+
+Trzy potwierdzone, poproszone tego samego dnia (2026-09-28) rzeczy w
+zakładce ANALIZA SOBOLA / Sandbox, plus wyjaśnienie osobnego incydentu z
+gubieniem commitów na gałęzi po zmergowaniu PR (patrz na końcu).
+
+1. **Panel stabilności parametrów, wersja CAGR.** `_build_stability_panel`
+   (Etap 8i) przyjmuje teraz `metric` ("Sortino" domyślnie, lub "CAGR") --
+   ten sam mechanizm (scatter + top-N% + werdykt STABILNE/UMIARKOWANE/
+   NIESTABILNE), ale liczony względem kolumny CAGR z `raw_outputs`.
+   Świadomie osobny panel z własnymi kontrolkami (`sobol-stability-pct-cagr`
+   / `sobol-stability-custom-pct-cagr` / `sobol-stability-panel-cagr`), NIE
+   przełącznik na jednym panelu -- ranking wg CAGR i wg Sortino może się
+   realnie różnić (CAGR całkowicie ignoruje kształt downside), więc to dwa
+   różne pytania, nie dwa widoki tego samego. Zero dodatkowych wywołań
+   solvera -- ten sam cache co Etap 8i.
+
+2. **Najlepsza pojedyncza kombinacja parametrów.** Nowa sekcja nad obiema
+   panelami stabilności: `_build_best_combo_readout` czyta z tego samego
+   cache'u wiersz `argmax(CAGR)` i osobno `argmax(Sortino)` spośród
+   poprawnych przebiegów, pokazuje ich metryki i wszystkie 8 wartości
+   parametrów. Jawnie oznaczone jako pojedynczy PRZEBIEG próbkowania
+   Saltelli, nie ponowna optymalizacja ani centroid stabilnego regionu z
+   paneli powyżej -- łatwo trafić na szczęśliwy outlier przy małym N, więc
+   opisane jako punkt odniesienia, nie "zalecane ustawienia".
+
+3. **Własne wartości suwaków w Sandboxie (poza zakresem suwaka).**
+   Sprawdzone najpierw: zakładka Rebalance (`STAGE4A_PARAMS_CONFIG`/
+   `build_param_card`) już dziś w pełni na to pozwala -- to zwykłe
+   `dcc.Input(type="number")` bez HTML min/max i bez przycinania po stronie
+   serwera; wpisanie wartości poza "Recommended" tylko podświetla pomarańczową
+   plakietkę "OUTSIDE RANGE", wartość i tak trafia do solvera. Zmiana
+   dotyczy więc wyłącznie Sandboxa, gdzie 8 parametrów to `dcc.Slider`
+   (fizycznie nie da się przeciągnąć poza min/max). Przy każdym suwaku
+   (`ui/layout.py`, `_slider_custom_input`) doszło małe pole "własna
+   wartość"; jego callback (`apply_custom_sandbox_slider_value`,
+   `ui/tab5_sandbox.py`) rozszerza min/max SAMEGO SUWAKA tak, żeby objąć
+   wpisaną wartość, i ustawia jego `value` -- suwak zostaje jedynym
+   źródłem prawdy, więc żaden z istniejących callbacków (m.in.
+   `update_forward_tracker`), które czytają te suwaki, nie wymagał zmian.
+
+**Osobny incydent (przyczyna "nie widzę commita na GitHubie"):** poprawka
+błędu wielo-procesowego cache'u z Etap 8i (`ui/tab5_sandbox.py`, commit
+`bdd9b48`) trafiła na gałąź `sobol-stability-panel-2026-09-28` PO tym, jak
+PR #6 z tej gałęzi został już zmergowany (merge o 18:51:39 UTC, ten commit
+wypchnięty 19:02:43 UTC -- 11 minut później) -- główny branch dostał tylko
+wpis do dziennika (Etap 8i), nie samą poprawkę. Push do już zmergowanej
+gałęzi nie tworzy nowego PR ani nie dopisuje się do main automatycznie.
+Naprawione przez cherry-pick brakującego commita na nową gałąź
+`sobol-cagr-and-custom-values-2026-09-28` cięta od świeżego `origin/main`,
+razem z pracą z punktów 1-3 powyżej, PR:
+https://github.com/marcel923/Beyond-Markowitz-Engine/pull/7. Wniosek na
+przyszłość: po zmergowaniu PR-a wszelka dalsza praca nad tym samym tematem
+idzie na NOWĄ gałąź od `origin/main`, nie kontynuacją starej (nawet tego
+samego dnia).
+
+Zweryfikowane: syntetyczny test dla obu metryk (CAGR-driving i
+Sortino-driving parametr poprawnie wraca jako dominujący w
+`_build_best_combo_readout`), `py_compile`, pełny `import app` bez kolizji
+ID callbacków, na świeżej gałęzi po cherry-picku (nie tylko przed nim).
+
+Pozostały z Etap 8g: (3) panel "Połączone Portfolio".
+
+---

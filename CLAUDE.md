@@ -102,6 +102,22 @@ ui/ (Dash layout + callbacks, woła tylko engine/ i data/):
   NIGDY sklejanie snapshotów (myliłoby efekt parametru z efektem czasu rynkowego).
 - Kosztowne operacje (>1s) zawsze jako osobny przycisk z `background=True` i
   raportowaniem postępu -- nigdy wpięte w szybki, reaktywny callback.
+- Moduły dzielące `app` (`ui/app_instance.py`) między procesami tła
+  (`background=True`, DiskcacheManager) i proces główny: NIGDY zwykły
+  słownik/zmienna na poziomie modułu jako cache między takim callbackiem a
+  zwykłym (foreground) callbackiem -- proces w tle ma własną kopię globals
+  modułu, zapis do niej nigdy nie dotrze do procesu głównego (zaobserwowane
+  i naprawione w Etap 8i/8j: panel stabilności parametrów cicho nie
+  reagował na zmianę progu). Współdzielony stan między tymi procesami idzie
+  przez `cache` (istniejący `diskcache.Cache` z `ui/app_instance.py`, ten
+  sam co używa DiskcacheManager) -- prawdziwy magazyn na dysku, nie obiekt
+  Pythona w pamięci jednego z procesów.
+- Po zmergowaniu PR-a: dalsza praca nad tym samym tematem (poprawka,
+  rozszerzenie) idzie na NOWĄ gałąź ciętą od świeżego `origin/main`, nigdy
+  kontynuacją tej samej, już zmergowanej gałęzi -- push do niej nie tworzy
+  nowego PR-a ani nie trafia do main automatycznie (zaobserwowane w Etap 8j:
+  commit z poprawką błędu wylądował 11 minut PO mergu PR #6, więc zniknął
+  aż do ręcznego cherry-picku na nową gałąź/PR #7).
 
 ## Pełna historia decyzji
 
@@ -138,10 +154,12 @@ nie ruszane). Pokaż go i POCZEKAJ na potwierdzenie, zanim go dopiszesz.
    uniwersum -- niepilne, nakładka RV to dziś ostatni krok procesu, nie kluczowy.
 
 **Zrobione od ostatniej aktualizacji tej listy** (patrz `PROJECT_CONTEXT_2.md`
-Etap 8d/8e/8f/8h/8i dla szczegółów): nakładka RV trafia teraz zawsze do zapisu
+Etap 8d/8e/8f/8h/8i/8j dla szczegółów): nakładka RV trafia teraz zawsze do zapisu
 snapshotu; dodano `QT_STORAGE_ROOT` do bezpiecznych sesji testowych bez
 ręcznego czyszczenia `storage/`; baseline regresji solvera z Etap 8a
 POTWIERDZONY 2026-09-28 jako nowy punkt odniesienia (Etap 8f, patrz
 Konwencje wyżej); R_f przemianowane na hurdle rate + auto-pobieranie
 historycznej rentowności ^TNX w Sandboxie (Etap 8h); panel stabilności
-parametrów vs Sortino w zakładce ANALIZA SOBOLA (Etap 8i).
+parametrów vs Sortino (i CAGR, Etap 8j) w zakładce ANALIZA SOBOLA + readout
+najlepszej kombinacji parametrów + własne wartości poza zakresem suwaków w
+Sandboxie (Etap 8i/8j).
