@@ -43,9 +43,13 @@ engine/ (pure math, zero Dash, zero I/O na dysk/sieć):
 
 data/ (persystencja + I/O rynkowe, zero matematyki, zero Dash):
 - market_data.py    -- WSZYSTKIE wywołania yfinance, jedno źródło prawdy
-- snapshot_store.py -- CRUD zapisów portfela (SAVE PORTFOLIO) -- dziś zapisuje
-                        WYŁĄCZNIE store-stage4b-results, BEZ danych nakładki RV
-                        (patrz "Otwarte priorytety" niżej)
+- snapshot_store.py -- CRUD zapisów portfela (SAVE PORTFOLIO) -- od Etap 8d
+                        zapisuje też wynik nakładki RV (`rv_overlay`, zawsze
+                        liczony przy zapisie, patrz PROJECT_CONTEXT_2.md).
+                        Ścieżki zapisu (tu i w company_store.py/universe_store.py)
+                        respektują `QT_STORAGE_ROOT` (Etap 8e) -- domyślnie
+                        "storage", nadpisywalne dla sesji testowych
+                        (`scripts/run_test_session.sh` / `.ps1`)
 - company_store.py  -- historia danych fundamentalnych, osobno per spółka
 - universe_store.py -- uniwersum śledzonych spółek
 
@@ -87,8 +91,14 @@ ui/ (Dash layout + callbacks, woła tylko engine/ i data/):
   niepotwierdzone na realnym uniwersum).
 - Nakładka RV post-solver ("Droga B"): działa WYŁĄCZNIE na już policzonych
   wagach solvera (nigdy nie dotyka mu_i/klastrowania), `w_max` jest przez nią
-  CAŁKOWICIE ignorowane (świadoma decyzja), i jest dziś CZYSTO DIAGNOSTYCZNA --
-  SAVE PORTFOLIO jej nie widzi.
+  CAŁKOWICIE ignorowane (świadoma decyzja). Od Etap 8d SAVE PORTFOLIO ZAWSZE
+  liczy i zapisuje jej wynik (`rv_overlay` w zapisie snapshotu) -- z cache'u
+  po "ZNAJDŹ PARY" (`theta_source="user_reviewed"`) albo od zera z
+  `DEFAULT_UNREVIEWED_THETA=0.4`, jawnie oznaczoną jako tymczasową
+  (`theta_source="default_unreviewed"`), gdy nie kliknięto. Stare zapisy
+  (bez klucza `rv_overlay`) i błąd liczenia (`computed: False`) są
+  rozróżniane bezpiecznie -- patrz `engine/pairs.py` i
+  `data/snapshot_store.py`.
 - Sobol liczony na JEDNYM zamrożonym zapisie i JEDNYM horyzoncie na raz --
   NIGDY sklejanie snapshotów (myliłoby efekt parametru z efektem czasu rynkowego).
 - Kosztowne operacje (>1s) zawsze jako osobny przycisk z `background=True` i
@@ -96,34 +106,37 @@ ui/ (Dash layout + callbacks, woła tylko engine/ i data/):
 
 ## Pełna historia decyzji
 
-`PROJECT_CONTEXT.md` to JEDYNE źródło prawdy dla chronologii i uzasadnień --
-append-only log ponumerowany "Etap X". NIE edytuj istniejących wpisów, tylko
-dopisuj nowe na końcu. Sekcje 1-4 tego pliku (Problem Formulation, Mathematical
-Framework) to opis teoretyczny, który w kilku miejscach NIE nadążył za kodem
-(nie pokazuje Alpha Blend z Etap 2, `nu` z Etap 7z, ani gamma uniwersalnego z
-Etap 8a) -- w razie sprzeczności ufaj najnowszemu wpisowi "Etap", nie Sekcji 3.
-PRZECZYTAJ odpowiedni fragment PRZED każdą większą zmianą w danym obszarze --
-nie trzeba czytać całości przy drobnych, niezwiązanych poprawkach.
+`PROJECT_CONTEXT.md` (Etap 1--8c) + `PROJECT_CONTEXT_2.md` (Etap 8d i dalej,
+od 2026-09-26 -- pierwszy plik zrobił się bardzo długi) to JEDYNE źródło
+prawdy dla chronologii i uzasadnień -- razem stanowią jeden ciągły,
+append-only log ponumerowany "Etap X" (numeracja wspólna między obydwoma
+plikami, nie zaczyna się od nowa w drugim). NIE edytuj istniejących wpisów w
+żadnym z nich, tylko dopisuj nowe na końcu `PROJECT_CONTEXT_2.md` (pierwszy
+plik jest już zamrożony jako archiwum). Sekcje 1-4 `PROJECT_CONTEXT.md`
+(Problem Formulation, Mathematical Framework) to opis teoretyczny, który w
+kilku miejscach NIE nadążył za kodem (nie pokazuje Alpha Blend z Etap 2, `nu`
+z Etap 7z, ani gamma uniwersalnego z Etap 8a) -- w razie sprzeczności ufaj
+najnowszemu wpisowi "Etap", nie Sekcji 3. PRZECZYTAJ odpowiedni fragment
+PRZED każdą większą zmianą w danym obszarze -- nie trzeba czytać całości przy
+drobnych, niezwiązanych poprawkach.
 
 ## Po większej, potwierdzonej zmianie
 
-Zaproponuj krótki wpis do `PROJECT_CONTEXT.md` w tym samym stylu co istniejące
-(kolejny numerowany "Etap", dopisany na końcu, nic wcześniejszego nie ruszane).
-Pokaż go i POCZEKAJ na potwierdzenie, zanim go dopiszesz.
+Zaproponuj krótki wpis do `PROJECT_CONTEXT_2.md` w tym samym stylu co
+istniejące (kolejny numerowany "Etap", dopisany na końcu, nic wcześniejszego
+nie ruszane). Pokaż go i POCZEKAJ na potwierdzenie, zanim go dopiszesz.
 
-## Otwarte priorytety (potwierdzone 2026-09-20)
+## Otwarte priorytety (zaktualizowane 2026-09-28)
 
-1. [GŁÓWNY] Nakładka RV nie trafia do zapisu. `save_snapshot_callback` w
-   `tab4_rebalance.py` czyta wyłącznie `store-stage4b-results`. Do zbudowania:
-   przy zapisie snapshotu, dodatkowo zapisać jakie pary były wybrane, ich
-   t-score, i jak zmieniły się wagi przed/po nakładką -- z jawnym znacznikiem
-   w pliku, żeby Sandbox mógł bezpiecznie odróżnić snapshoty zapisane z
-   nakładką od tych bez niej (bez tego ryzyko błędów przy wczytywaniu starszych
-   zapisów).
-2. Kalibracja `MATCH_MIN_WINDOWS`/`MATCH_MIN_T_STATISTIC` na realnym
+1. Kalibracja `MATCH_MIN_WINDOWS`/`MATCH_MIN_T_STATISTIC` na realnym
    uniwersum -- niepilne, nakładka RV to dziś ostatni krok procesu, nie kluczowy.
-3. Potwierdzenie nowego baseline'u regresji solvera z Etap 8a (patrz Konwencje
+2. Potwierdzenie nowego baseline'u regresji solvera z Etap 8a (patrz Konwencje
    wyżej) -- czeka na wyraźne "tak"/"nie" od właściciela projektu.
-4. Rozwinięcie zakładki "ANALIZA SOBOLA" (czytelność/interpretacja wyników) --
+3. Rozwinięcie zakładki "ANALIZA SOBOLA" (czytelność/interpretacja wyników) --
    plus czeka na więcej realnych sesji handlowych od utworzenia pierwszego
    zapisu, żeby wyniki na prawdziwych danych były wiarygodne.
+
+**Zrobione od ostatniej aktualizacji tej listy** (patrz `PROJECT_CONTEXT_2.md`
+Etap 8d/8e dla szczegółów): nakładka RV trafia teraz zawsze do zapisu
+snapshotu (dawny priorytet #1, [GŁÓWNY]); dodano `QT_STORAGE_ROOT` do
+bezpiecznych sesji testowych bez ręcznego czyszczenia `storage/`.
