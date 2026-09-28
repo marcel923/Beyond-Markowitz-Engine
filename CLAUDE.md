@@ -74,10 +74,9 @@ ui/ (Dash layout + callbacks, woła tylko engine/ i data/):
 ## Kluczowe konwencje (cały projekt)
 
 - Regresja solvera po KAŻDEJ zmianie w engine/: tickery AVGO/NVDA/HPE/LYC.AX,
-  seed=5. Baseline POTWIERDZONY na dziś: NVDA=0.35, HPE=0.246, LYC.AX=0.054,
-  AVGO=0.35. Po Etap 8a (gamma uniwersalne na mu_i) wychodzi HPE=0.2463,
-  LYC.AX=0.0537 -- policzone i pokazane, ale NIEPOTWIERDZONE jako nowy
-  punkt odniesienia. Stary baseline wiąże dopóki nie padnie wyraźne "tak".
+  seed=5. Baseline POTWIERDZONY (2026-09-28, po Etap 8a -- gamma uniwersalne
+  na mu_i): NVDA=0.35, AVGO=0.35, HPE=0.2463, LYC.AX=0.0537. Poprzedni
+  baseline (HPE=0.246, LYC.AX=0.054, sprzed Etap 8a) jest już nieaktualny.
 - Fitting: zawsze `scipy.optimize.least_squares` (Trust Region Reflective),
   NIGDY `minimize()` na ręcznym MSE -- confirmed źle działa nawet na czystych danych.
 - Zakładki 2 i 3 modułu Relative Value (mechanizm dyskretny 80/20) są CELOWO
@@ -128,15 +127,16 @@ nie ruszane). Pokaż go i POCZEKAJ na potwierdzenie, zanim go dopiszesz.
 
 ## Otwarte priorytety (zaktualizowane 2026-09-28)
 
-1. Kalibracja `MATCH_MIN_WINDOWS`/`MATCH_MIN_T_STATISTIC` na realnym
+1. [GŁÓWNY] Rozwinięcie zakładki "ANALIZA SOBOLA" -- patrz `PROJECT_CONTEXT_2.md`
+   Etap 8g dla propozycji w trakcie omawiania z właścicielem projektu
+   (panel stabilności parametrów vs Sortino, R_f/hurdle -- przemianowanie
+   + opcjonalne auto-pobieranie ^TNX, panel "Połączone Portfolio").
+2. Kalibracja `MATCH_MIN_WINDOWS`/`MATCH_MIN_T_STATISTIC` na realnym
    uniwersum -- niepilne, nakładka RV to dziś ostatni krok procesu, nie kluczowy.
-2. Potwierdzenie nowego baseline'u regresji solvera z Etap 8a (patrz Konwencje
-   wyżej) -- czeka na wyraźne "tak"/"nie" od właściciela projektu.
-3. Rozwinięcie zakładki "ANALIZA SOBOLA" (czytelność/interpretacja wyników) --
-   plus czeka na więcej realnych sesji handlowych od utworzenia pierwszego
-   zapisu, żeby wyniki na prawdziwych danych były wiarygodne.
 
 **Zrobione od ostatniej aktualizacji tej listy** (patrz `PROJECT_CONTEXT_2.md`
-Etap 8d/8e dla szczegółów): nakładka RV trafia teraz zawsze do zapisu
-snapshotu (dawny priorytet #1, [GŁÓWNY]); dodano `QT_STORAGE_ROOT` do
-bezpiecznych sesji testowych bez ręcznego czyszczenia `storage/`.
+Etap 8d/8e/8f dla szczegółów): nakładka RV trafia teraz zawsze do zapisu
+snapshotu; dodano `QT_STORAGE_ROOT` do bezpiecznych sesji testowych bez
+ręcznego czyszczenia `storage/`; baseline regresji solvera z Etap 8a
+POTWIERDZONY 2026-09-28 jako nowy punkt odniesienia (Etap 8f, patrz
+Konwencje wyżej).
