@@ -127,19 +127,21 @@ nie ruszane). Pokaż go i POCZEKAJ na potwierdzenie, zanim go dopiszesz.
 
 ## Otwarte priorytety (zaktualizowane 2026-09-28)
 
-1. [GŁÓWNY] Rozwinięcie zakładki "ANALIZA SOBOLA", pozostałe 2 z 3 punktów
-   propozycji z `PROJECT_CONTEXT_2.md` Etap 8g: (1) panel stabilności
-   parametrów vs Sortino (wizualizacja już policzonego `raw_sample`/
-   `raw_outputs` z `run_sobol_batch`, zero nowych obliczeń), (3) panel
-   "Połączone Portfolio" (ręczne łączenie kilku zapisów w jedną krzywą
-   equity przez podmianę na dacie utworzenia, bez wygładzania). Punkt 2
-   (R_f -> hurdle rate + auto-pobieranie ^TNX) już zrobiony -- patrz Etap 8h.
+1. [GŁÓWNY] Rozwinięcie zakładki "ANALIZA SOBOLA", ostatni z 3 punktów
+   propozycji z `PROJECT_CONTEXT_2.md` Etap 8g: panel "Połączone Portfolio"
+   (ręczne łączenie kilku zapisów w jedną krzywą equity przez podmianę na
+   dacie utworzenia, bez wygładzania), osobna zakładka-siostra Forward
+   Trackera, celowo odseparowana od mechanizmu Sobola. Punkt 1 (panel
+   stabilności parametrów vs Sortino) i punkt 2 (R_f -> hurdle rate +
+   auto-pobieranie ^TNX) już zrobione -- patrz Etap 8h/8i.
 2. Kalibracja `MATCH_MIN_WINDOWS`/`MATCH_MIN_T_STATISTIC` na realnym
    uniwersum -- niepilne, nakładka RV to dziś ostatni krok procesu, nie kluczowy.
 
 **Zrobione od ostatniej aktualizacji tej listy** (patrz `PROJECT_CONTEXT_2.md`
-Etap 8d/8e/8f/8h dla szczegółów): nakładka RV trafia teraz zawsze do zapisu
+Etap 8d/8e/8f/8h/8i dla szczegółów): nakładka RV trafia teraz zawsze do zapisu
 snapshotu; dodano `QT_STORAGE_ROOT` do bezpiecznych sesji testowych bez
 ręcznego czyszczenia `storage/`; baseline regresji solvera z Etap 8a
 POTWIERDZONY 2026-09-28 jako nowy punkt odniesienia (Etap 8f, patrz
-Konwencje wyżej).
+Konwencje wyżej); R_f przemianowane na hurdle rate + auto-pobieranie
+historycznej rentowności ^TNX w Sandboxie (Etap 8h); panel stabilności
+parametrów vs Sortino w zakładce ANALIZA SOBOLA (Etap 8i).

@@ -802,6 +802,127 @@ def _build_sobol_bar_figure(names, s1, s1_conf, st, st_conf, title):
     return fig
 
 
+# Confirmed 2026-09-28 (Etap 8i): last Sobol batch's per-run raw data (sample +
+# outputs), cached server-side so the parameter-stability panel below can be
+# redrawn instantly when the top-% highlight threshold changes, WITHOUT
+# re-running the (expensive, N*18-solver-call) Sobol batch itself. Deliberately
+# a plain module-level dict, not a dcc.Store -- run_sobol_batch's own docstring
+# (engine/sobol_analysis.py) is explicit that raw_sample/raw_outputs must NOT
+# be shipped to the browser (thousands of rows, too much for a JSON round-trip);
+# this stays server-side for exactly that reason. Fine for this single-user
+# desktop app -- no other state in this project is isolated per-session/user
+# either (e.g. DiskcacheManager itself is a single shared server-side cache).
+_LAST_SOBOL_RAW = {"sample": None, "raw_outputs": None, "param_ranges": None}
+
+STABILITY_PCT_OPTIONS = [10, 7.5, 5, 2.5]
+
+
+def _build_stability_panel(sample, raw_outputs, param_ranges, pct):
+    """
+    Confirmed 2026-09-28 (Etap 8i), proposed in PROJECT_CONTEXT_2.md Etap 8g
+    point 1: for each of the 8 solver parameters, a small scatter of
+    (parameter value in that run, Sortino of that run) across every run in
+    the last Sobol batch, with the top `pct`% by Sortino highlighted. A tight
+    cluster of highlighted points in a narrow band of some parameter's axis
+    says "stable, trustworthy signal"; highlighted points scattered across
+    the whole axis (same spread as the greyed-out background) says "this
+    parameter doesn't actually decide the outcome -- good runs happen at any
+    value of it". Zero additional solver calls -- pure visualization of data
+    run_sobol_batch already computed.
+
+    This shows CORRELATION, not causation -- with all 8 parameters varying
+    together per Saltelli sample, an apparent cluster could be driven by an
+    interaction with another parameter rather than this one alone. That's
+    exactly what the existing S1 (own effect) / ST (own effect + interactions)
+    bar charts and PRCC table already measure formally; this panel is a
+    visual complement to them, not a replacement -- read together.
+
+    Rows with solver_success=False are excluded ENTIRELY (not median-imputed
+    the way the Sobol variance-decomposition math itself handles them) --
+    injecting a fake median point here would visually distort where winning
+    runs actually cluster.
+    """
+    solver_success = raw_outputs["solver_success"].values
+    sortino_all = raw_outputs["Sortino"].values
+    valid = solver_success & np.isfinite(sortino_all)
+    n_valid = int(valid.sum())
+    if n_valid < 20:
+        return html.Div(
+            f"Za mało poprawnych przebiegów ({n_valid}) do sensownego panelu stabilności -- "
+            f"potrzeba co najmniej 20 (po odrzuceniu awarii solvera).",
+            style={"fontSize": "11px", "color": THEME["warn"]}
+        )
+
+    sortino_valid = sortino_all[valid]
+    sample_valid = np.asarray(sample)[valid]
+
+    n_top = max(1, round(pct / 100.0 * n_valid))
+    order = np.argsort(sortino_valid)
+    top_idx = order[-n_top:]
+    rest_idx = order[:-n_top]
+
+    panels = []
+    for i, pname in enumerate(PARAM_ORDER):
+        col = sample_valid[:, i]
+        lo, hi = param_ranges.get(pname, DEFAULT_PARAM_RANGES[pname])
+        full_span = (hi - lo) if hi > lo else 1.0
+
+        top_vals = col[top_idx]
+        top_lo, top_hi = float(top_vals.min()), float(top_vals.max())
+        span_pct = 100.0 * (top_hi - top_lo) / full_span
+
+        if span_pct < 25:
+            verdict, color = "STABILNE", THEME["pos"]
+        elif span_pct < 60:
+            verdict, color = "UMIARKOWANE", THEME["warn"]
+        else:
+            verdict, color = "NIESTABILNE", THEME["neg"]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=col[rest_idx], y=sortino_valid[rest_idx], mode="markers",
+            marker=dict(size=4, color=THEME["text_dim"], opacity=0.35),
+            showlegend=False, hoverinfo="skip"))
+        fig.add_trace(go.Scatter(
+            x=top_vals, y=sortino_valid[top_idx], mode="markers",
+            marker=dict(size=5, color=color, opacity=0.9), showlegend=False,
+            hovertemplate=f"{pname}=%{{x:.3f}}<br>Sortino=%{{y:.3f}}<extra></extra>"))
+        fig.update_layout(
+            template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
+            height=210, margin=dict(l=36, r=10, t=28, b=28),
+            title=dict(text=pname, font=dict(size=11, color=THEME["text_white"])),
+            xaxis=dict(tickfont=dict(size=9, color=THEME["text_dim"])),
+            yaxis=dict(title="Sortino", title_font=dict(size=9, color=THEME["text_dim"]),
+                       tickfont=dict(size=9, color=THEME["text_dim"])),
+        )
+
+        panels.append(html.Div([
+            dcc.Graph(figure=fig, config={"displayModeBar": False}),
+            html.Div(f"top {pct:g}%: [{top_lo:.3g}, {top_hi:.3g}] = {span_pct:.0f}% pełnego zakresu -- {verdict}",
+                     style={"fontSize": "9.5px", "color": color, "textAlign": "center", "marginTop": "2px"}),
+        ]))
+
+    return html.Div([
+        html.Div(f"({n_valid} poprawnych przebiegów z {len(raw_outputs)}; top {pct:g}% = {n_top} podświetlonych)",
+                 style={"fontSize": "10px", "color": THEME["text_dim"], "marginBottom": "10px"}),
+        html.Div(panels, style={"display": "grid", "gridTemplateColumns": "repeat(4, 1fr)", "gap": "10px"}),
+    ])
+
+
+@app.callback(
+    Output("sobol-stability-panel", "children"),
+    Input("sobol-stability-pct", "value"),
+    prevent_initial_call=True,
+)
+def rebuild_stability_panel(pct):
+    """Cheap redraw only -- reuses _LAST_SOBOL_RAW, never re-runs the solver."""
+    if _LAST_SOBOL_RAW["sample"] is None:
+        return dash.no_update
+    pct = pct if isinstance(pct, (int, float)) else STABILITY_PCT_OPTIONS[0]
+    return _build_stability_panel(_LAST_SOBOL_RAW["sample"], _LAST_SOBOL_RAW["raw_outputs"],
+                                    _LAST_SOBOL_RAW["param_ranges"], pct)
+
+
 @app.callback(
     Output("sobol-results-container", "children"), Output("sobol-run-status", "children"),
     Input("btn-run-sobol", "n_clicks"),
@@ -900,6 +1021,12 @@ def run_sobol_analysis(set_progress, _n_clicks, snapshot_id, horizon_label, n_va
     sobol_result = run_sobol_batch(fundamental_inputs, cluster_of, risk_prices[common_tickers], forward_returns,
                                      param_ranges=param_ranges, N=n_value, on_progress=_sobol_progress)
 
+    # Etap 8i: cache raw per-run data server-side for the stability panel below --
+    # see _LAST_SOBOL_RAW's own docstring for why this is a module global, not a dcc.Store.
+    _LAST_SOBOL_RAW["sample"] = sobol_result["raw_sample"]
+    _LAST_SOBOL_RAW["raw_outputs"] = sobol_result["raw_outputs"]
+    _LAST_SOBOL_RAW["param_ranges"] = param_ranges
+
     # --- Renderowanie wynikow ---
     sections = []
     if morris_summary is not None:
@@ -968,6 +1095,21 @@ def run_sobol_analysis(set_progress, _n_clicks, snapshot_id, horizon_label, n_va
             data=prcc_rows, style_header=datatable_style_header(), style_data=datatable_style_data(), style_cell=datatable_style_cell(),
             style_data_conditional=[datatable_row_alt_rule()],
         ),
+
+        html.Div("PANEL STABILNOŚCI PARAMETRÓW (Sortino) -- gdzie klastrują się najlepsze wyniki",
+                 style={"fontSize": "11px", "fontWeight": "bold", "color": THEME["text_white"], "marginBottom": "8px", "marginTop": "24px"}),
+        html.Div([
+            html.Span("Podświetl top:", style={"fontSize": "10px", "color": THEME["text_label"], "marginRight": "8px"}),
+            dcc.RadioItems(
+                id="sobol-stability-pct",
+                options=[{"label": f" {p:g}%  ", "value": p} for p in STABILITY_PCT_OPTIONS],
+                value=STABILITY_PCT_OPTIONS[0], inline=True,
+                labelStyle={"fontSize": "11px", "color": THEME["text_dim"], "marginRight": "10px"},
+            ),
+        ], style={"marginBottom": "10px"}),
+        html.Div(id="sobol-stability-panel",
+                  children=_build_stability_panel(sobol_result["raw_sample"], sobol_result["raw_outputs"],
+                                                    param_ranges, STABILITY_PCT_OPTIONS[0])),
     ])
 
     horizon_display = "od początku" if horizon_label == "since_inception" else horizon_label
