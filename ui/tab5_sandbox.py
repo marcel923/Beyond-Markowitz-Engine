@@ -18,7 +18,7 @@ import plotly.graph_objects as go
 from dash import dcc, html, dash_table
 from dash.dependencies import Input, Output, State
 
-from ui.app_instance import app
+from ui.app_instance import app, cache
 from ui.theme import THEME
 from ui.components import build_kpi_card, build_kpi_strip, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule, build_pair_overlay_output, build_tps_formula_breakdown
 from engine.risk import compute_estrada_matrix, compute_crash_overlap_matrix
@@ -806,13 +806,24 @@ def _build_sobol_bar_figure(names, s1, s1_conf, st, st_conf, title):
 # outputs), cached server-side so the parameter-stability panel below can be
 # redrawn instantly when the top-% highlight threshold changes, WITHOUT
 # re-running the (expensive, N*18-solver-call) Sobol batch itself. Deliberately
-# a plain module-level dict, not a dcc.Store -- run_sobol_batch's own docstring
+# server-side, not a dcc.Store -- run_sobol_batch's own docstring
 # (engine/sobol_analysis.py) is explicit that raw_sample/raw_outputs must NOT
-# be shipped to the browser (thousands of rows, too much for a JSON round-trip);
-# this stays server-side for exactly that reason. Fine for this single-user
-# desktop app -- no other state in this project is isolated per-session/user
-# either (e.g. DiskcacheManager itself is a single shared server-side cache).
-_LAST_SOBOL_RAW = {"sample": None, "raw_outputs": None, "param_ranges": None}
+# be shipped to the browser (thousands of rows, too much for a JSON round-trip).
+#
+# BUGFIX 2026-09-28 (still Etap 8i, same-day fix): this was originally a plain
+# module-level dict (`_LAST_SOBOL_RAW = {...}`), which is wrong for a
+# `background=True` callback -- run_sobol_analysis below runs in a SEPARATE
+# worker process spawned by DiskcacheManager (see ui/app_instance.py), which
+# has its own copy of this module's globals. Writing to a module dict there
+# never reached the main process, so the highlight-%-change callback (which
+# DOES run in the main process, it's a normal foreground callback) always
+# read back the untouched {"sample": None, ...} and silently no-op'd via
+# `dash.no_update` -- the radio buttons/custom field visibly did nothing.
+# Fixed by reusing the project's existing `cache` (the same diskcache.Cache
+# instance DiskcacheManager itself uses, imported from ui.app_instance), which
+# is an actual on-disk store both processes read/write through -- not a
+# per-process Python object.
+_SOBOL_STABILITY_CACHE_KEY = "sobol_stability_raw_v1"
 
 STABILITY_PCT_OPTIONS = [10, 7.5, 5, 2.5]
 
@@ -912,15 +923,49 @@ def _build_stability_panel(sample, raw_outputs, param_ranges, pct):
 @app.callback(
     Output("sobol-stability-panel", "children"),
     Input("sobol-stability-pct", "value"),
+    Input("sobol-stability-custom-pct", "value"),
     prevent_initial_call=True,
 )
-def rebuild_stability_panel(pct):
-    """Cheap redraw only -- reuses _LAST_SOBOL_RAW, never re-runs the solver."""
-    if _LAST_SOBOL_RAW["sample"] is None:
+def rebuild_stability_panel(preset_pct, custom_pct):
+    """
+    Cheap redraw only -- reuses the last batch's raw data from the shared
+    diskcache (see _SOBOL_STABILITY_CACHE_KEY), never re-runs the solver.
+
+    Two inputs: the preset radio (10/7.5/5/2.5%) and a free-text "własna %"
+    number field added same-day (2026-09-28) alongside the process-boundary
+    cache fix, so a value doesn't have to match one of the four presets.
+    Whichever of the two the user actually just touched wins -- determined
+    via callback_context, same pattern as delete_snapshot_guarded above --
+    so typing a custom % doesn't fight with the still-selected radio option,
+    and picking a preset overrides a stale custom value still sitting in the box.
+    """
+    cached = cache.get(_SOBOL_STABILITY_CACHE_KEY)
+    if not cached:
         return dash.no_update
-    pct = pct if isinstance(pct, (int, float)) else STABILITY_PCT_OPTIONS[0]
-    return _build_stability_panel(_LAST_SOBOL_RAW["sample"], _LAST_SOBOL_RAW["raw_outputs"],
-                                    _LAST_SOBOL_RAW["param_ranges"], pct)
+
+    trigger_id = dash.callback_context.triggered[0]["prop_id"].split(".")[0] if dash.callback_context.triggered else None
+
+    def _valid_custom(v):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(v) or v <= 0:
+            return None
+        return min(v, 100.0)
+
+    if trigger_id == "sobol-stability-custom-pct":
+        pct = _valid_custom(custom_pct)
+        if pct is None:
+            pct = preset_pct if isinstance(preset_pct, (int, float)) else STABILITY_PCT_OPTIONS[0]
+    elif trigger_id == "sobol-stability-pct" and isinstance(preset_pct, (int, float)):
+        pct = preset_pct
+    else:
+        pct = _valid_custom(custom_pct)
+        if pct is None:
+            pct = preset_pct if isinstance(preset_pct, (int, float)) else STABILITY_PCT_OPTIONS[0]
+
+    return _build_stability_panel(cached["sample"], cached["raw_outputs"], cached["param_ranges"], pct)
 
 
 @app.callback(
@@ -1022,10 +1067,14 @@ def run_sobol_analysis(set_progress, _n_clicks, snapshot_id, horizon_label, n_va
                                      param_ranges=param_ranges, N=n_value, on_progress=_sobol_progress)
 
     # Etap 8i: cache raw per-run data server-side for the stability panel below --
-    # see _LAST_SOBOL_RAW's own docstring for why this is a module global, not a dcc.Store.
-    _LAST_SOBOL_RAW["sample"] = sobol_result["raw_sample"]
-    _LAST_SOBOL_RAW["raw_outputs"] = sobol_result["raw_outputs"]
-    _LAST_SOBOL_RAW["param_ranges"] = param_ranges
+    # see _SOBOL_STABILITY_CACHE_KEY's own comment above for why this goes through
+    # the shared diskcache.Cache (not a module global -- this callback runs in a
+    # separate background-callback worker process).
+    cache.set(_SOBOL_STABILITY_CACHE_KEY, {
+        "sample": sobol_result["raw_sample"],
+        "raw_outputs": sobol_result["raw_outputs"],
+        "param_ranges": param_ranges,
+    })
 
     # --- Renderowanie wynikow ---
     sections = []
@@ -1105,7 +1154,17 @@ def run_sobol_analysis(set_progress, _n_clicks, snapshot_id, horizon_label, n_va
                 options=[{"label": f" {p:g}%  ", "value": p} for p in STABILITY_PCT_OPTIONS],
                 value=STABILITY_PCT_OPTIONS[0], inline=True,
                 labelStyle={"fontSize": "11px", "color": THEME["text_dim"], "marginRight": "10px"},
+                style={"display": "inline-block", "verticalAlign": "middle"},
             ),
+            html.Span("lub własna:", style={"fontSize": "10px", "color": THEME["text_label"], "marginLeft": "12px", "marginRight": "6px"}),
+            dcc.Input(
+                id="sobol-stability-custom-pct", type="number", min=0.1, max=100, step=0.1,
+                placeholder="np. 15", debounce=True,
+                style={"width": "70px", "backgroundColor": THEME["bg_input"], "color": THEME["text_white"],
+                       "border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px",
+                       "fontSize": "11px", "padding": "3px 6px", "verticalAlign": "middle"},
+            ),
+            html.Span(" %", style={"fontSize": "10px", "color": THEME["text_dim"], "marginLeft": "3px"}),
         ], style={"marginBottom": "10px"}),
         html.Div(id="sobol-stability-panel",
                   children=_build_stability_panel(sobol_result["raw_sample"], sobol_result["raw_outputs"],
