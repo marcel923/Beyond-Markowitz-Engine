@@ -321,9 +321,15 @@ _SANDBOX_SLIDER_IDS = ["slider-sb-alpha", "slider-sb-lambda", "slider-sb-nu", "s
 
 
 @app.callback(
-    [Output(sid, "value") for sid in _SANDBOX_SLIDER_IDS] +
-    [Output(sid, "min") for sid in _SANDBOX_SLIDER_IDS] +
-    [Output(sid, "max") for sid in _SANDBOX_SLIDER_IDS],
+    # allow_duplicate=True on every Output here: slider-sb-rf.value is ALSO
+    # an Output of autofetch_sandbox_rf (Etap 8h, fires on snapshot change) --
+    # Dash refuses two callbacks writing the same Output otherwise ("Output 6
+    # (slider-sb-rf.value) is already in use", hit 2026-09-28). Set on all 24
+    # outputs uniformly rather than just the one that currently collides, so
+    # a future slider-writing callback doesn't hit this again unnoticed.
+    [Output(sid, "value", allow_duplicate=True) for sid in _SANDBOX_SLIDER_IDS] +
+    [Output(sid, "min", allow_duplicate=True) for sid in _SANDBOX_SLIDER_IDS] +
+    [Output(sid, "max", allow_duplicate=True) for sid in _SANDBOX_SLIDER_IDS],
     [Input(f"custom-{sid}", "value") for sid in _SANDBOX_SLIDER_IDS],
     [State(sid, "min") for sid in _SANDBOX_SLIDER_IDS] + [State(sid, "max") for sid in _SANDBOX_SLIDER_IDS],
     prevent_initial_call=True,

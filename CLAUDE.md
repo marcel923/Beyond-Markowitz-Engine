@@ -118,6 +118,22 @@ ui/ (Dash layout + callbacks, woła tylko engine/ i data/):
   nowego PR-a ani nie trafia do main automatycznie (zaobserwowane w Etap 8j:
   commit z poprawką błędu wylądował 11 minut PO mergu PR #6, więc zniknął
   aż do ręcznego cherry-picku na nową gałąź/PR #7).
+- Po KAŻDEJ zmianie/dodaniu `@app.callback`: `python3 scripts/check_duplicate_outputs.py`
+  -- dwa callbacki piszące ten sam `Output(id, prop)` bez `allow_duplicate=True`
+  NIE wywalają się ani na `py_compile`, ani na `import app`, ani nawet na
+  starcie serwera (`app.run()`) -- Dash waliduje to WYŁĄCZNIE po stronie
+  przeglądarki (czerwony błąd dash-renderera dopiero w oknie przeglądarki).
+  Ten skrypt odtwarza tę samą walidację z `app._callback_list` server-side,
+  więc łapie to PRZED uruchomieniem czegokolwiek w przeglądarce
+  (zaobserwowane 2026-09-28: `slider-sb-rf.value` w dwóch callbackach naraz,
+  patrz Etap 8j/8k w `PROJECT_CONTEXT_2.md`).
+- Środowisko do weryfikacji (`py_compile`/`import app`/testy) MUSI mieć
+  zainstalowany Dash w zakresie z `requirements.txt` (`>=3.3,<4.0`) --
+  zaobserwowane 2026-09-28: sesja miała domyślnie Dash 4.4.1, czyli dokładnie
+  tę gałąź, przed którą ostrzega komentarz przy `dash` w `requirements.txt`
+  (przepisany od zera dcc.Slider/dcc.Dropdown). `pip install "dash>=3.3,<4.0"`
+  przed jakąkolwiek weryfikacją, jeśli `python3 -c "import dash; print(dash.__version__)"`
+  pokazuje coś innego.
 
 ## Pełna historia decyzji
 
