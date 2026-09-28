@@ -144,8 +144,8 @@ STAGE4A_PARAMS_CONFIG = [
      "comment": "Reference analyst coverage threshold for maximum confidence factor A_i."},
     {"id": "wmax", "name": "Max Asset Weight", "symbol": "w_max", "default": 0.30, "min": 0.05, "max": 1.00, "step": 0.05,
      "comment": "Hard single-stock concentration cap (e.g., 0.30 = max 30% weight per stock). Enforced as a bound directly in the Stage 2 SLSQP; if Stage 1's intra-cluster concentration makes this infeasible, the Singleton Split procedure automatically carves the dominant asset(s) into their own capped micro-cluster — see the alert panel below the results."},
-    {"id": "rf", "name": "Risk-Free Rate", "symbol": "R_f", "default": 0.045, "min": 0.0, "max": 0.25, "step": 0.005,
-     "comment": "Annualized risk-free / qualitative hurdle rate. Ręczne wejście, brak automatycznego pobierania ^TNX (zgodnie z zasadą 'dane manualne')."},
+    {"id": "rf", "name": "Stopa referencyjna / Hurdle Rate", "symbol": "R_f", "default": 0.045, "min": 0.0, "max": 0.25, "step": 0.005,
+     "comment": "Hurdle rate w liczniku TPS -- (w.mu - R_f)/... -- NIE stopa MAR używana przez Sortino w zakładce ANALIZA SOBOLA (tam MAR jest na sztywno 0.0, celowo niepowiązane, patrz engine/sobol_analysis.py). Na głównej zakładce Rebalance -- ręczne wejście (dzisiejsza wartość). W Sandboxie (Etap 8h) domyślnie auto-wypełniane rzeczywistą rentownością 10Y (^TNX) z dnia utworzenia analizowanego zapisu, wciąż ręcznie nadpisywalne."},
 ]
 
 def build_param_card(cfg):
@@ -544,7 +544,7 @@ def build_tps_formula_breakdown(mu_p, rf, sigma_p, k_p, lam, nu, tps_p=None):
     return html.Div(style={"padding": "16px", "backgroundColor": THEME["bg_card"], "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}"}, children=[
         html.Div("PEŁNY ROZKŁAD WZORU TPS (wartości na dziś, przy aktualnych suwakach)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginBottom": "10px"}),
         _row("μ_P (oczekiwany zwrot portfela)", f"{mu_p*100:+.2f}%"),
-        _row("R_f (stopa wolna od ryzyka / hurdle)", f"{rf*100:.2f}%"),
+        _row("R_f (stopa referencyjna / hurdle rate)", f"{rf*100:.2f}%"),
         _row("Licznik = μ_P − R_f", f"{numerator*100:+.2f} p.p."),
         html.Div(style={"height": "8px"}),
         _row("σ_P (√wᵀΣ_εw, zmienność Estrady)", f"{sigma_p*100:.3f}%"),

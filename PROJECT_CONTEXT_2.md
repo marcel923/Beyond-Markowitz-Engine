@@ -217,3 +217,51 @@ właściciela projektu (w szczególności co do (2b) auto-pobierania R_f) i
 ogólne potwierdzenie zakresu przed pisaniem kodu.
 
 ---
+
+### 8h. R_f przemianowany na hurdle rate + auto-pobieranie ^TNX w Sandboxie (complete)
+
+Confirmed follow-up: realizuje punkt 2 propozycji z Etap 8g -- właściciel
+projektu zatwierdził wariant (b) (auto-pobieranie historycznej rentowności
+na dzień utworzenia zapisu, nie dzisiejszej) i poprosił o wdrożenie razem z
+przemianowaniem etykiety.
+
+**Przemianowanie**: `STAGE4A_PARAMS_CONFIG["rf"]["name"]` (`ui/components.py`)
+z "Risk-Free Rate" na "Stopa referencyjna / Hurdle Rate" -- to jedno miejsce
+zasila zarówno kartę parametru na Rebalance (Tab 4), jak i etykietę suwaka w
+Sandboxie (`ui/layout.py`, `slider-sb-rf`). Dopisany explicit komentarz przy
+tym wpisie configu, tłumaczący na stałe, że Sortino w `engine/sobol_analysis.py`
+liczy się względem MAR=0.0, NIGDY niepowiązane z R_f (Etap 8b) -- żeby to
+rozróżnienie nie zatarło się przy przyszłych zmianach.
+
+**Auto-pobieranie**: nowa `fetch_treasury_yield_on_date(target_date)` w
+`data/market_data.py` -- ten sam kanał yfinance co reszta projektu, pobiera
+`^TNX` (CBOE 10Y Treasury Yield Index na Yahoo, notowany wprost w procentach
+-- zweryfikowane) na/najbliżej przed podaną datą, zwraca jako ułamek albo
+`None` przy dowolnym niepowodzeniu (nigdy nie rzuca wyjątku). Podłączone w
+`ui/tab5_sandbox.py` w dwóch miejscach:
+- Forward Tracker: wybór zapisu auto-wypełnia `slider-sb-rf` realną
+  rentownością 10Y na dzień UTWORZENIA TEGO KONKRETNEGO ZAPISU (było
+  statyczne 0.045) -- suwak zostaje suwakiem, można dalej ręcznie
+  nadpisać; nieudane pobranie zostawia poprzednią wartość + pokazuje notkę
+  zamiast cicho zostawić coś mylącego.
+- Zakładka Sobol: ta sama historyczna rentowność pokazana jako czysto
+  informacyjna podpowiedź przy wyborze zapisu -- CELOWO nie zmienia
+  automatycznie zakresu przeszukiwania `sobol-range-rf-min/max` (zostaje
+  szeroki, płaski `DEFAULT_PARAM_RANGES` z Etap 8g/8b -- osobna decyzja
+  metodologiczna, właściciel projektu może ręcznie dostosować zakres
+  patrząc na podpowiedź).
+
+Główna zakładka Rebalance (`input-rf`) NIETKNIĘTA -- tam portfel powstaje
+"dziś", ręczne wejście dzisiejszej wartości zostaje, zgodnie z ustaleniem.
+
+Zweryfikowane: konwersja jednostek (%→ułamek) i fallback na najbliższy
+wcześniejszy dzień sesyjny (weekend/święto) przetestowane na zamockowanej
+odpowiedzi yfinance (live Yahoo niedostępne z tego środowiska); `py_compile`
+czyste na wszystkich czterech dotkniętych plikach; pełny `import app`
+przechodzi bez kolizji ID callbacków Dash. Solver i matematyka Sortino
+nietknięte. PR: https://github.com/marcel923/Beyond-Markowitz-Engine/pull/5.
+
+Pozostałe z Etap 8g wciąż otwarte: (1) panel stabilności parametrów vs
+Sortino, (3) panel "Połączone Portfolio".
+
+---

@@ -17,7 +17,7 @@ they never touch a dcc.Store or an html.Div.
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -196,3 +196,54 @@ def fetch_price_history(tickers: List[str], start_date: str) -> "pd.DataFrame":
             continue
 
     return prices.dropna(how="all")
+
+def fetch_treasury_yield_on_date(target_date, ticker: str = "^TNX", lookback_days: int = 10) -> Optional[float]:
+    """
+    Historical 10Y US Treasury yield (CBOE ^TNX, same yfinance channel as
+    every other price fetch in this module) on/nearest-before `target_date`
+    -- confirmed 2026-09-28, added for the Sandbox's R_f/hurdle-rate
+    auto-fill (see ui/tab5_sandbox.py) so analyzing an OLD snapshot uses the
+    rate that was actually prevailing on its creation date, not today's.
+
+    Yahoo quotes ^TNX directly in percent (verified: ~5.22 on a day the
+    real 10Y yield was ~5.23%) -- this function divides by 100 and returns
+    a plain fraction (0.0523), matching how every Rf/rf value is used
+    everywhere else in this project (STAGE4A_PARAMS_CONFIG, DEFAULT_PARAM_RANGES,
+    the solver's own `Rf` kwarg).
+
+    `target_date` accepts anything pandas can parse (str, date, Timestamp).
+    Fetches a `lookback_days`-wide window ending at `target_date` (not a
+    single-day request) so a weekend/holiday snapshot date still resolves
+    to the most recent prior trading day's close -- same reasoning as
+    `fetch_current_prices`'s period="5d" above. Returns None on any
+    failure (no data for that window, network error, bad date) -- same
+    "None/empty means failure" contract as the rest of this module; NEVER
+    raises, so a caller can safely fall back to a manual/default value.
+    """
+    import yfinance as yf
+
+    try:
+        end = pd.Timestamp(target_date) + pd.Timedelta(days=1)  # yfinance `end` is exclusive
+        start = end - pd.Timedelta(days=lookback_days + 1)
+    except Exception:
+        return None
+
+    try:
+        df = yf.download(ticker, start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"),
+                          threads=False, auto_adjust=True, progress=False)
+    except Exception:
+        return None
+
+    if df is None or df.empty:
+        return None
+
+    try:
+        close = df["Close"]
+        if isinstance(close, pd.DataFrame):  # MultiIndex quirk, single-ticker call can still trigger it
+            close = close.iloc[:, 0]
+        close = close.dropna()
+        if close.empty:
+            return None
+        return float(close.iloc[-1]) / 100.0
+    except Exception:
+        return None
