@@ -303,6 +303,51 @@ def compute_sandbox_allocation(record, tickers, risk_prices, sb_lambda, sb_gamma
     return w_final, note, extra
 
 
+# Confirmed 2026-09-28: pairs each Sandbox slider with the small "własna wartość"
+# dcc.Input added beside it in ui/layout.py (_slider_custom_input). A dcc.Slider
+# genuinely cannot be dragged past its own min/max -- unlike Rebalance's
+# STAGE4A_PARAMS_CONFIG cards, which are plain dcc.Input number fields with no
+# HTML min/max and no server-side clamping, so a value outside the "Recommended"
+# badge already just works there today, no change needed.
+#
+# Deliberately widens the SLIDER's own min/max (never shrinks them back) and
+# sets its value, rather than threading a separate "custom override" value
+# through update_forward_tracker/run_sobol_analysis/etc. -- every existing
+# callback in this file already reads these sliders via Input/State on their
+# "value" prop, so the slider stays the one source of truth and nothing
+# downstream needed to change.
+_SANDBOX_SLIDER_IDS = ["slider-sb-alpha", "slider-sb-lambda", "slider-sb-nu", "slider-sb-gamma",
+                        "slider-sb-kappa", "slider-sb-wmax", "slider-sb-rf", "slider-sb-nref"]
+
+
+@app.callback(
+    [Output(sid, "value") for sid in _SANDBOX_SLIDER_IDS] +
+    [Output(sid, "min") for sid in _SANDBOX_SLIDER_IDS] +
+    [Output(sid, "max") for sid in _SANDBOX_SLIDER_IDS],
+    [Input(f"custom-{sid}", "value") for sid in _SANDBOX_SLIDER_IDS],
+    [State(sid, "min") for sid in _SANDBOX_SLIDER_IDS] + [State(sid, "max") for sid in _SANDBOX_SLIDER_IDS],
+    prevent_initial_call=True,
+)
+def apply_custom_sandbox_slider_value(*args):
+    n = len(_SANDBOX_SLIDER_IDS)
+    custom_values, mins, maxs = args[:n], args[n:2 * n], args[2 * n:3 * n]
+
+    trigger_id = dash.callback_context.triggered[0]["prop_id"].split(".")[0] if dash.callback_context.triggered else None
+    values_out, mins_out, maxs_out = [dash.no_update] * n, [dash.no_update] * n, [dash.no_update] * n
+
+    if trigger_id and trigger_id.startswith("custom-"):
+        base_id = trigger_id[len("custom-"):]
+        if base_id in _SANDBOX_SLIDER_IDS:
+            idx = _SANDBOX_SLIDER_IDS.index(base_id)
+            val = custom_values[idx]
+            if isinstance(val, (int, float)) and np.isfinite(val):
+                values_out[idx] = val
+                mins_out[idx] = min(mins[idx], val) if isinstance(mins[idx], (int, float)) else val
+                maxs_out[idx] = max(maxs[idx], val) if isinstance(maxs[idx], (int, float)) else val
+
+    return values_out + mins_out + maxs_out
+
+
 @app.callback(
     Output("kpi-summary-row", "children"), Output("sandbox-weights-table-container", "children"),
     Output("graph-forward-equity-curves", "figure"), Output("graph-asset-returns-bar", "figure"),
@@ -828,18 +873,48 @@ _SOBOL_STABILITY_CACHE_KEY = "sobol_stability_raw_v1"
 STABILITY_PCT_OPTIONS = [10, 7.5, 5, 2.5]
 
 
-def _build_stability_panel(sample, raw_outputs, param_ranges, pct):
+def _stability_controls(preset_id, custom_id):
+    """Preset-% radio + free-text custom-% field, shared layout for the
+    Sortino and CAGR stability panels below (same-day CAGR twin, 2026-09-28)."""
+    return html.Div([
+        html.Span("Podświetl top:", style={"fontSize": "10px", "color": THEME["text_label"], "marginRight": "8px"}),
+        dcc.RadioItems(
+            id=preset_id,
+            options=[{"label": f" {p:g}%  ", "value": p} for p in STABILITY_PCT_OPTIONS],
+            value=STABILITY_PCT_OPTIONS[0], inline=True,
+            labelStyle={"fontSize": "11px", "color": THEME["text_dim"], "marginRight": "10px"},
+            style={"display": "inline-block", "verticalAlign": "middle"},
+        ),
+        html.Span("lub własna:", style={"fontSize": "10px", "color": THEME["text_label"], "marginLeft": "12px", "marginRight": "6px"}),
+        dcc.Input(
+            id=custom_id, type="number", min=0.1, max=100, step=0.1,
+            placeholder="np. 15", debounce=True,
+            style={"width": "70px", "backgroundColor": THEME["bg_input"], "color": THEME["text_white"],
+                   "border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px",
+                   "fontSize": "11px", "padding": "3px 6px", "verticalAlign": "middle"},
+        ),
+        html.Span(" %", style={"fontSize": "10px", "color": THEME["text_dim"], "marginLeft": "3px"}),
+    ], style={"marginBottom": "10px"})
+
+
+def _build_stability_panel(sample, raw_outputs, param_ranges, pct, metric="Sortino"):
     """
     Confirmed 2026-09-28 (Etap 8i), proposed in PROJECT_CONTEXT_2.md Etap 8g
     point 1: for each of the 8 solver parameters, a small scatter of
-    (parameter value in that run, Sortino of that run) across every run in
-    the last Sobol batch, with the top `pct`% by Sortino highlighted. A tight
+    (parameter value in that run, `metric` of that run) across every run in
+    the last Sobol batch, with the top `pct`% by `metric` highlighted. A tight
     cluster of highlighted points in a narrow band of some parameter's axis
     says "stable, trustworthy signal"; highlighted points scattered across
     the whole axis (same spread as the greyed-out background) says "this
     parameter doesn't actually decide the outcome -- good runs happen at any
     value of it". Zero additional solver calls -- pure visualization of data
     run_sobol_batch already computed.
+
+    `metric`: same-day addition (2026-09-28) -- "Sortino" (default) or "CAGR",
+    whichever column of raw_outputs to rank/plot by. The two are independent
+    panels in results_layout below (own highlight-% controls each), not a
+    toggle on one panel -- the point was literally "the same charts, for CAGR
+    too", and CAGR/Sortino can disagree on which runs are "best".
 
     This shows CORRELATION, not causation -- with all 8 parameters varying
     together per Saltelli sample, an apparent cluster could be driven by an
@@ -854,8 +929,8 @@ def _build_stability_panel(sample, raw_outputs, param_ranges, pct):
     runs actually cluster.
     """
     solver_success = raw_outputs["solver_success"].values
-    sortino_all = raw_outputs["Sortino"].values
-    valid = solver_success & np.isfinite(sortino_all)
+    metric_all = raw_outputs[metric].values
+    valid = solver_success & np.isfinite(metric_all)
     n_valid = int(valid.sum())
     if n_valid < 20:
         return html.Div(
@@ -864,11 +939,11 @@ def _build_stability_panel(sample, raw_outputs, param_ranges, pct):
             style={"fontSize": "11px", "color": THEME["warn"]}
         )
 
-    sortino_valid = sortino_all[valid]
+    metric_valid = metric_all[valid]
     sample_valid = np.asarray(sample)[valid]
 
     n_top = max(1, round(pct / 100.0 * n_valid))
-    order = np.argsort(sortino_valid)
+    order = np.argsort(metric_valid)
     top_idx = order[-n_top:]
     rest_idx = order[:-n_top]
 
@@ -891,19 +966,19 @@ def _build_stability_panel(sample, raw_outputs, param_ranges, pct):
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=col[rest_idx], y=sortino_valid[rest_idx], mode="markers",
+            x=col[rest_idx], y=metric_valid[rest_idx], mode="markers",
             marker=dict(size=4, color=THEME["text_dim"], opacity=0.35),
             showlegend=False, hoverinfo="skip"))
         fig.add_trace(go.Scatter(
-            x=top_vals, y=sortino_valid[top_idx], mode="markers",
+            x=top_vals, y=metric_valid[top_idx], mode="markers",
             marker=dict(size=5, color=color, opacity=0.9), showlegend=False,
-            hovertemplate=f"{pname}=%{{x:.3f}}<br>Sortino=%{{y:.3f}}<extra></extra>"))
+            hovertemplate=f"{pname}=%{{x:.3f}}<br>{metric}=%{{y:.3f}}<extra></extra>"))
         fig.update_layout(
             template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
             height=210, margin=dict(l=36, r=10, t=28, b=28),
             title=dict(text=pname, font=dict(size=11, color=THEME["text_white"])),
             xaxis=dict(tickfont=dict(size=9, color=THEME["text_dim"])),
-            yaxis=dict(title="Sortino", title_font=dict(size=9, color=THEME["text_dim"]),
+            yaxis=dict(title=metric, title_font=dict(size=9, color=THEME["text_dim"]),
                        tickfont=dict(size=9, color=THEME["text_dim"])),
         )
 
@@ -914,10 +989,87 @@ def _build_stability_panel(sample, raw_outputs, param_ranges, pct):
         ]))
 
     return html.Div([
-        html.Div(f"({n_valid} poprawnych przebiegów z {len(raw_outputs)}; top {pct:g}% = {n_top} podświetlonych)",
+        html.Div(f"({n_valid} poprawnych przebiegów z {len(raw_outputs)}; top {pct:g}% = {n_top} podświetlonych, wg {metric})",
                  style={"fontSize": "10px", "color": THEME["text_dim"], "marginBottom": "10px"}),
         html.Div(panels, style={"display": "grid", "gridTemplateColumns": "repeat(4, 1fr)", "gap": "10px"}),
     ])
+
+
+def _build_best_combo_readout(sample, raw_outputs):
+    """
+    Same-day addition (2026-09-28): "daj parametry dla kombinacji parametrów,
+    która miała najwyższy CAGR oraz Sortino Ratio". The single Saltelli run
+    (out of the whole batch) that scored highest on each metric, with its
+    exact 8 parameter values read off straight from raw_sample/raw_outputs --
+    zero extra solver calls, same cached data as the stability panels above.
+
+    Deliberately NOT presented as "recommended settings": this is one sampled
+    point in an 8-dimensional space, not a re-optimization or a centroid of
+    the stable region above -- with N runs it can land on a lucky outlier,
+    especially in thin, noisy corners of the search range. Read it alongside
+    the stability panels (a parameter that's also STABILE there gives this
+    point more weight than one that's NIESTABILNE).
+    """
+    solver_success = raw_outputs["solver_success"].values
+    cagr_all = raw_outputs["CAGR"].values
+    sortino_all = raw_outputs["Sortino"].values
+    valid = solver_success & np.isfinite(cagr_all) & np.isfinite(sortino_all)
+    n_valid = int(valid.sum())
+    if n_valid == 0:
+        return html.Div("Brak poprawnych przebiegów do wyznaczenia najlepszej kombinacji.",
+                         style={"fontSize": "11px", "color": THEME["warn"]})
+
+    sample_valid = np.asarray(sample)[valid]
+    cagr_valid = cagr_all[valid]
+    sortino_valid = sortino_all[valid]
+
+    idx_cagr = int(np.argmax(cagr_valid))
+    idx_sortino = int(np.argmax(sortino_valid))
+
+    def _row(title, idx, color):
+        params_txt = ", ".join(f"{p}={sample_valid[idx, i]:.3g}" for i, p in enumerate(PARAM_ORDER))
+        return html.Div([
+            html.Span(title, style={"fontSize": "10px", "fontWeight": "bold", "color": color, "marginRight": "6px"}),
+            html.Span(f"CAGR={cagr_valid[idx]:.2%}  Sortino={sortino_valid[idx]:.3f}  —  {params_txt}",
+                      style={"fontSize": "10px", "color": THEME["text_dim"]}),
+        ], style={"marginBottom": "5px"})
+
+    return html.Div([
+        _row("Najlepszy CAGR:", idx_cagr, THEME["pos"]),
+        _row("Najlepszy Sortino:", idx_sortino, THEME["accent"]),
+        html.Div(f"({n_valid} poprawnych przebiegów przeszukanych)",
+                 style={"fontSize": "9px", "color": THEME["text_dim"], "marginTop": "2px"}),
+        html.Div("Pojedynczy najlepszy PRZEBIEG próbkowania Saltelli, nie ponowna optymalizacja ani centroid stabilnego regionu z paneli powyżej -- traktuj jako punkt odniesienia, nie \"zalecane ustawienia\"; parametr STABILNY w panelu powyżej nadaje tej wartości więcej wagi niż NIESTABILNY.",
+                 style={"fontSize": "9px", "color": THEME["text_dim"], "fontStyle": "italic", "marginTop": "4px"}),
+    ])
+
+
+def _valid_custom_pct(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(v) or v <= 0:
+        return None
+    return min(v, 100.0)
+
+
+def _resolve_stability_pct(trigger_id, custom_input_id, preset_pct, custom_pct):
+    """
+    Shared by both the Sortino and CAGR stability-panel rebuild callbacks
+    below. Whichever control the user actually just touched wins -- via
+    callback_context, same trigger_id pattern as delete_snapshot_guarded
+    elsewhere in this file -- so typing a custom % doesn't fight with a
+    still-selected preset radio, and picking a preset cleanly overrides a
+    stale custom value left in its box.
+    """
+    if trigger_id == custom_input_id:
+        pct = _valid_custom_pct(custom_pct)
+        return pct if pct is not None else (preset_pct if isinstance(preset_pct, (int, float)) else STABILITY_PCT_OPTIONS[0])
+    if isinstance(preset_pct, (int, float)):
+        return preset_pct
+    pct = _valid_custom_pct(custom_pct)
+    return pct if pct is not None else STABILITY_PCT_OPTIONS[0]
 
 
 @app.callback(
@@ -927,45 +1079,37 @@ def _build_stability_panel(sample, raw_outputs, param_ranges, pct):
     prevent_initial_call=True,
 )
 def rebuild_stability_panel(preset_pct, custom_pct):
-    """
-    Cheap redraw only -- reuses the last batch's raw data from the shared
-    diskcache (see _SOBOL_STABILITY_CACHE_KEY), never re-runs the solver.
+    """Cheap redraw only -- reuses the last batch's raw data from the shared
+    diskcache (see _SOBOL_STABILITY_CACHE_KEY), never re-runs the solver."""
+    cached = cache.get(_SOBOL_STABILITY_CACHE_KEY)
+    if not cached:
+        return dash.no_update
+    trigger_id = dash.callback_context.triggered[0]["prop_id"].split(".")[0] if dash.callback_context.triggered else None
+    pct = _resolve_stability_pct(trigger_id, "sobol-stability-custom-pct", preset_pct, custom_pct)
+    return _build_stability_panel(cached["sample"], cached["raw_outputs"], cached["param_ranges"], pct, metric="Sortino")
 
-    Two inputs: the preset radio (10/7.5/5/2.5%) and a free-text "własna %"
-    number field added same-day (2026-09-28) alongside the process-boundary
-    cache fix, so a value doesn't have to match one of the four presets.
-    Whichever of the two the user actually just touched wins -- determined
-    via callback_context, same pattern as delete_snapshot_guarded above --
-    so typing a custom % doesn't fight with the still-selected radio option,
-    and picking a preset overrides a stale custom value still sitting in the box.
+
+@app.callback(
+    Output("sobol-stability-panel-cagr", "children"),
+    Input("sobol-stability-pct-cagr", "value"),
+    Input("sobol-stability-custom-pct-cagr", "value"),
+    prevent_initial_call=True,
+)
+def rebuild_stability_panel_cagr(preset_pct, custom_pct):
+    """
+    Same-day addition (2026-09-28): "te same wykresy ale dla CAGR" -- an
+    independent CAGR-ranked twin of rebuild_stability_panel above, own
+    highlight-% controls, same cached raw data, zero extra solver calls.
+    A run can rank very differently by CAGR vs. by Sortino (CAGR ignores
+    downside shape entirely), so this is a second panel, not a toggle on
+    the first one.
     """
     cached = cache.get(_SOBOL_STABILITY_CACHE_KEY)
     if not cached:
         return dash.no_update
-
     trigger_id = dash.callback_context.triggered[0]["prop_id"].split(".")[0] if dash.callback_context.triggered else None
-
-    def _valid_custom(v):
-        try:
-            v = float(v)
-        except (TypeError, ValueError):
-            return None
-        if not np.isfinite(v) or v <= 0:
-            return None
-        return min(v, 100.0)
-
-    if trigger_id == "sobol-stability-custom-pct":
-        pct = _valid_custom(custom_pct)
-        if pct is None:
-            pct = preset_pct if isinstance(preset_pct, (int, float)) else STABILITY_PCT_OPTIONS[0]
-    elif trigger_id == "sobol-stability-pct" and isinstance(preset_pct, (int, float)):
-        pct = preset_pct
-    else:
-        pct = _valid_custom(custom_pct)
-        if pct is None:
-            pct = preset_pct if isinstance(preset_pct, (int, float)) else STABILITY_PCT_OPTIONS[0]
-
-    return _build_stability_panel(cached["sample"], cached["raw_outputs"], cached["param_ranges"], pct)
+    pct = _resolve_stability_pct(trigger_id, "sobol-stability-custom-pct-cagr", preset_pct, custom_pct)
+    return _build_stability_panel(cached["sample"], cached["raw_outputs"], cached["param_ranges"], pct, metric="CAGR")
 
 
 @app.callback(
@@ -1145,30 +1289,24 @@ def run_sobol_analysis(set_progress, _n_clicks, snapshot_id, horizon_label, n_va
             style_data_conditional=[datatable_row_alt_rule()],
         ),
 
+        html.Div("NAJLEPSZA POJEDYNCZA KOMBINACJA PARAMETRÓW (CAGR / Sortino)",
+                 style={"fontSize": "11px", "fontWeight": "bold", "color": THEME["text_white"], "marginBottom": "8px", "marginTop": "24px"}),
+        html.Div(_build_best_combo_readout(sobol_result["raw_sample"], sobol_result["raw_outputs"]),
+                 style={"marginBottom": "8px"}),
+
         html.Div("PANEL STABILNOŚCI PARAMETRÓW (Sortino) -- gdzie klastrują się najlepsze wyniki",
                  style={"fontSize": "11px", "fontWeight": "bold", "color": THEME["text_white"], "marginBottom": "8px", "marginTop": "24px"}),
-        html.Div([
-            html.Span("Podświetl top:", style={"fontSize": "10px", "color": THEME["text_label"], "marginRight": "8px"}),
-            dcc.RadioItems(
-                id="sobol-stability-pct",
-                options=[{"label": f" {p:g}%  ", "value": p} for p in STABILITY_PCT_OPTIONS],
-                value=STABILITY_PCT_OPTIONS[0], inline=True,
-                labelStyle={"fontSize": "11px", "color": THEME["text_dim"], "marginRight": "10px"},
-                style={"display": "inline-block", "verticalAlign": "middle"},
-            ),
-            html.Span("lub własna:", style={"fontSize": "10px", "color": THEME["text_label"], "marginLeft": "12px", "marginRight": "6px"}),
-            dcc.Input(
-                id="sobol-stability-custom-pct", type="number", min=0.1, max=100, step=0.1,
-                placeholder="np. 15", debounce=True,
-                style={"width": "70px", "backgroundColor": THEME["bg_input"], "color": THEME["text_white"],
-                       "border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px",
-                       "fontSize": "11px", "padding": "3px 6px", "verticalAlign": "middle"},
-            ),
-            html.Span(" %", style={"fontSize": "10px", "color": THEME["text_dim"], "marginLeft": "3px"}),
-        ], style={"marginBottom": "10px"}),
+        _stability_controls("sobol-stability-pct", "sobol-stability-custom-pct"),
         html.Div(id="sobol-stability-panel",
                   children=_build_stability_panel(sobol_result["raw_sample"], sobol_result["raw_outputs"],
-                                                    param_ranges, STABILITY_PCT_OPTIONS[0])),
+                                                    param_ranges, STABILITY_PCT_OPTIONS[0], metric="Sortino")),
+
+        html.Div("PANEL STABILNOŚCI PARAMETRÓW (CAGR) -- gdzie klastrują się najlepsze wyniki",
+                 style={"fontSize": "11px", "fontWeight": "bold", "color": THEME["text_white"], "marginBottom": "8px", "marginTop": "24px"}),
+        _stability_controls("sobol-stability-pct-cagr", "sobol-stability-custom-pct-cagr"),
+        html.Div(id="sobol-stability-panel-cagr",
+                  children=_build_stability_panel(sobol_result["raw_sample"], sobol_result["raw_outputs"],
+                                                    param_ranges, STABILITY_PCT_OPTIONS[0], metric="CAGR")),
     ])
 
     horizon_display = "od początku" if horizon_label == "since_inception" else horizon_label

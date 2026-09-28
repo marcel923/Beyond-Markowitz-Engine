@@ -54,6 +54,27 @@ def _sidebar_item_children(abbrev, label, is_active):
         }),
     ]
 
+# Confirmed 2026-09-28: Sandbox's params are dcc.Slider (unlike Rebalance's
+# STAGE4A_PARAMS_CONFIG cards, which are already plain dcc.Input number fields
+# with no HTML min/max and no server-side clamping -- an "OUTSIDE RANGE"
+# badge is the only feedback, the typed value is always used as-is). A slider
+# genuinely can't be dragged past its own min/max, so this adds a small
+# "własna wartość" number field beside each Sandbox slider. Its callback (see
+# ui/tab5_sandbox.py's apply_custom_sandbox_slider_value) widens the SLIDER's
+# own min/max to include whatever is typed and sets its value -- the slider
+# stays the single source of truth read everywhere else in this file, so
+# nothing downstream needed to change.
+def _slider_custom_input(slider_id):
+    return html.Div([
+        html.Span("własna wartość:", style={"fontSize": "9px", "color": THEME["text_label"], "marginRight": "6px"}),
+        dcc.Input(
+            id=f"custom-{slider_id}", type="number", debounce=True, placeholder="poza zakresem?",
+            style={"width": "90px", "backgroundColor": THEME["bg_input"], "color": THEME["text_white"],
+                   "border": f"1px solid {THEME['border_strong']}", "borderRadius": "4px",
+                   "fontSize": "10px", "padding": "2px 6px"},
+        ),
+    ], style={"marginTop": "4px", "display": "flex", "alignItems": "center"})
+
 def _build_sidebar_item(module_id, abbrev, label, is_default):
     return html.Div(
         id=f"navitem-{module_id}", n_clicks=0,
@@ -1245,28 +1266,36 @@ app.layout = html.Div(style={
 
                                 html.Label("ALPHA — Growth/Upside Blend (α)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px"}),
                                 dcc.Slider(id="slider-sb-alpha", min=0.0, max=1.0, step=0.05, value=0.5, marks={0.0: "0 (Upside)", 0.5: "0.5", 1.0: "1 (Growth)"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                _slider_custom_input("slider-sb-alpha"),
 
                                 html.Label("LAMBDA — kara za współkrach (λ, K = J⊙S)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
                                 dcc.Slider(id="slider-sb-lambda", min=0.1, max=25.0, step=0.1, value=3.0, marks={0.1: "0.1", 5: "5", 10: "10", 15: "15", 25: "25"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                _slider_custom_input("slider-sb-lambda"),
 
                                 html.Label("NU — wrażliwość na zmienność portfela (ν, Σ_ε)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
                                 dcc.Slider(id="slider-sb-nu", min=-5.0, max=15.0, step=0.5, value=0.0, marks={-5: "-5", 0: "0", 5: "5", 10: "10", 15: "15"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                _slider_custom_input("slider-sb-nu"),
 
                                 html.Label("GAMMA — kara za rozstrzał widełek (γ)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
                                 dcc.Slider(id="slider-sb-gamma", min=0.1, max=5.0, step=0.1, value=1.5, marks={0.1: "0.1", 1: "1", 2.5: "2.5", 5: "5"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                _slider_custom_input("slider-sb-gamma"),
 
                                 html.Label("KAPPA — momentum rewizji EPS (κ)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
                                 dcc.Slider(id="slider-sb-kappa", min=0.0, max=5.0, step=0.1, value=1.0, marks={0: "0", 2.5: "2.5", 5: "5"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                _slider_custom_input("slider-sb-kappa"),
 
                                 html.Label("MAX SINGLE WEIGHT (w_max)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
                                 dcc.Slider(id="slider-sb-wmax", min=0.05, max=1.0, step=0.05, value=0.30, marks={0.05: "5%", 0.3: "30%", 0.6: "60%", 1.0: "100%"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                _slider_custom_input("slider-sb-wmax"),
 
                                 html.Label("STOPA REFERENCYJNA / HURDLE RATE (R_f)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
                                 dcc.Slider(id="slider-sb-rf", min=0.0, max=0.25, step=0.005, value=0.045, marks={0.0: "0%", 0.10: "10%", 0.25: "25%"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                _slider_custom_input("slider-sb-rf"),
                                 html.Div(id="sb-rf-autofetch-note", style={"fontSize": "9px", "color": THEME["text_dim"], "marginTop": "4px", "fontStyle": "italic"}),
 
                                 html.Label("N_ref — próg pokrycia analityków (A_i)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginTop": "20px", "display": "block"}),
                                 dcc.Slider(id="slider-sb-nref", min=3, max=30, step=1, value=8, marks={3: "3", 15: "15", 30: "30"}, tooltip={"placement": "bottom", "always_visible": True}),
+                                _slider_custom_input("slider-sb-nref"),
 
                                 html.Div(style={"borderTop": f"1px solid {THEME['border_strong']}", "margin": "24px 0 0 0", "paddingTop": "14px"}, children=[
                                     html.Div("SANDBOX PORTFOLIO METRICS", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "0.5px", "marginBottom": "10px"}),
