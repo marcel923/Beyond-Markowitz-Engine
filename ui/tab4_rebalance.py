@@ -36,7 +36,7 @@ from engine.pairs import (
     build_rv_overlay_record, rv_overlay_unavailable, DEFAULT_UNREVIEWED_THETA,
 )
 from data import snapshot_store as snap
-from data.market_data import fetch_universe_prices
+from data.market_data import fetch_universe_prices, fetch_current_prices, fetch_ticker_currencies, fetch_fx_rate
 
 @app.callback(Output("panel-stage4a-container", "style"), Input("store-stage3-final-payload", "data"), prevent_initial_call=True)
 def reveal_stage4a_panel(payload):
@@ -583,3 +583,123 @@ def render_pair_overlay_tilts(match_cache, theta, stage4b_results, w_max):
         return dash.no_update, dash.no_update
     weights = stage4b_results["weights"]
     return _build_pair_overlay_output(weights, match_cache, theta, w_max)
+
+
+# ---------------------------------------------------------------------------
+# KALKULATOR POZYCJI -- confirmed 2026-09-30. Czysty przelicznik: widzi
+# WYŁĄCZNIE wagi solvera (store-stage4b-results), ceny na żywo
+# (fetch_current_prices) i kursy walut na żywo (fetch_fx_rate/
+# fetch_ticker_currencies, data/market_data.py) -- nigdy mu_i/klastrowania/
+# nakładki RV. Na razie WYŁĄCZNIE ułamkowe akcje (user: "na razie zróbmy
+# tylko ułamkowe") -- zaokrąglenie do pełnych akcji explicite odłożone.
+# background=True bo fetch_ticker_currencies robi jedno wolne `.info` na
+# ticker (ten sam, dokumentowany-jako-wolny wzorzec co fetch_company_profile
+# gdzie indziej w tym projekcie).
+# ---------------------------------------------------------------------------
+
+@app.callback(
+    Output("poscalc-results", "children"), Output("poscalc-status", "children"),
+    Input("btn-run-poscalc", "n_clicks"),
+    State("store-stage4b-results", "data"), State("input-poscalc-value", "value"), State("input-poscalc-base-ccy", "value"),
+    background=True, progress=[Output("poscalc-status", "children", allow_duplicate=True)],
+    prevent_initial_call=True,
+)
+def run_position_calculator(set_progress, _n_clicks, stage4b_results, portfolio_value, base_ccy):
+    """
+    Przelicza wagi solvera na dokładne (ułamkowe) pozycje w wybranej walucie
+    bazowej: shares_t = (wartość_portfela * w_t * kurs(base_ccy->native_ccy_t))
+    / cena_t(native_ccy_t). Tylko spółki z DODATNIĄ wagą solvera (w_i<=0 nie
+    ma czego kupować).
+
+    Degradacja per-wiersz: brakująca cena/waluta/kurs FX dla danego tickera
+    pokazuje "--" w odpowiednich kolumnach tego JEDNEGO wiersza, zamiast
+    wywalać cały wynik -- reszta portfela nadal się liczy i wyświetla.
+
+    Czysty przelicznik -- NIE zapisuje nic, NIE zmienia store-stage4b-results,
+    NIE jest rekomendacją transakcyjną (ceny/kursy są chwilowe/orientacyjne).
+    """
+    if not stage4b_results or stage4b_results.get("error"):
+        return dash.no_update, html.Div("Brak poprawnych wyników solvera -- uruchom optymalizację powyżej.", style={"color": THEME["orange"]})
+
+    weights = stage4b_results.get("weights") or {}
+    selected = [(t, w) for t, w in weights.items() if w and w > 1e-9]
+    if not selected:
+        return dash.no_update, html.Div("Brak spółek z dodatnią wagą do przeliczenia.", style={"color": THEME["orange"]})
+
+    try:
+        portfolio_value = float(portfolio_value)
+    except (TypeError, ValueError):
+        portfolio_value = 0.0
+    if portfolio_value <= 0:
+        return dash.no_update, html.Div("Wartość portfela musi być liczbą dodatnią.", style={"color": THEME["orange"]})
+
+    base_ccy = (base_ccy or "USD").strip().upper()
+    if len(base_ccy) != 3:
+        return dash.no_update, html.Div("Waluta bazowa musi być 3-literowym kodem (np. USD, PLN, EUR).", style={"color": THEME["orange"]})
+
+    tickers = [t for t, _ in selected]
+
+    set_progress([f"Pobieram bieżące ceny dla {len(tickers)} spółek..."])
+    live_prices = fetch_current_prices(tickers)
+
+    set_progress([f"Pobieram walutę notowania każdej spółki ({len(tickers)} zapytań, jedno na raz)..."])
+    native_ccys = fetch_ticker_currencies(tickers)
+
+    distinct_ccys = sorted(set(native_ccys.values()) - {base_ccy})
+    if distinct_ccys:
+        set_progress([f"Pobieram kursy walut ({len(distinct_ccys)}: {', '.join(distinct_ccys)})..."])
+    fx_cache = {base_ccy: 1.0}
+    for ccy in distinct_ccys:
+        fx_cache[ccy] = fetch_fx_rate(base_ccy, ccy)
+
+    rows = []
+    n_ok, n_missing = 0, 0
+    alloc_col = f"Alokacja ({base_ccy})"
+    fx_col = f"Kurs FX ({base_ccy}→waluta)"
+    for t, w in sorted(selected, key=lambda x: -x[1]):
+        price = live_prices.get(t)
+        ccy = native_ccys.get(t)
+        fx = fx_cache.get(ccy) if ccy else None
+        alloc_base = portfolio_value * w
+        shares = (alloc_base * fx / price) if (price and ccy and fx is not None) else None
+
+        if shares is not None:
+            n_ok += 1
+        else:
+            n_missing += 1
+
+        rows.append({
+            "Ticker": t,
+            "w_i": w,
+            alloc_col: round(alloc_base, 2),
+            "Waluta": ccy or "--",
+            "Cena": round(price, 2) if price is not None else "--",
+            fx_col: round(fx, 4) if fx is not None else "--",
+            "Akcje (ułamkowe)": round(shares, 4) if shares is not None else "--",
+        })
+
+    table = dash_table.DataTable(
+        data=rows, page_action='native', page_size=20, sort_action='native',
+        columns=[
+            {"name": "Ticker", "id": "Ticker"},
+            {"name": "Waga (w_i)", "id": "w_i", "type": "numeric", "format": {"specifier": ".2%"}},
+            {"name": alloc_col, "id": alloc_col, "type": "numeric", "format": {"specifier": ",.2f"}},
+            {"name": "Waluta notowania", "id": "Waluta"},
+            {"name": "Cena (waluta notowania)", "id": "Cena"},
+            {"name": fx_col, "id": fx_col},
+            {"name": "Akcje (ułamkowe)", "id": "Akcje (ułamkowe)"},
+        ],
+        style_header=datatable_style_header(),
+        style_data=datatable_style_data(),
+        style_cell=datatable_style_cell(),
+        style_cell_conditional=[{'if': {'column_id': 'Ticker'}, 'fontWeight': 'bold', 'textAlign': 'left', 'color': THEME['accent']}],
+        style_data_conditional=[datatable_row_alt_rule()],
+    )
+
+    status_bits = [f"Przeliczono {n_ok}/{len(selected)} spółek."]
+    if n_missing:
+        status_bits.append(f"{n_missing} spółek bez pełnych danych (cena/waluta/kurs) -- oznaczone \"--\".")
+    status_bits.append("Tylko ułamkowe akcje -- zaokrąglenie do pełnych jeszcze nie zrobione. To przelicznik, nie rekomendacja transakcyjna.")
+    status = html.Div(" ".join(status_bits), style={"color": THEME["orange"] if n_missing else THEME["accent"]})
+
+    return table, status

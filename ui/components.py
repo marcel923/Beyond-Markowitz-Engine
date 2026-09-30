@@ -231,6 +231,11 @@ STAGE3_COLUMNS = [
     {"name": "Analyst Coverage (Ni)", "id": "Analyst Coverage (Ni)", "type": "numeric", "format": {"specifier": "d"}, "editable": True},
     {"name": "EPS 2Y CAGR (Gi,2Y) [%]", "id": "EPS 2Y CAGR (Gi,2Y)", "type": "numeric", "format": {"specifier": ".2f"}, "editable": True},
     {"name": "90d EPS Revision (ΔEPS90d) [%]", "id": "90d EPS Revision (ΔEPS90d)", "type": "numeric", "format": {"specifier": ".2f"}, "editable": True},
+    # Confirmed 2026-09-30: nieedytowalna, czysto informacyjna -- pokazuje z jakiego dnia
+    # pochodzą fundamenty auto-uzupełnione z company_store (get_latest) przy świeżym
+    # Stage 1, żeby było jasne, że to NIE dzisiejsze dane, zanim ktoś zatwierdzi Stage 3.
+    # "brak zapisu" gdy ticker nie ma żadnej historii w company_store (fundamenty zostają 0.0).
+    {"name": "Fundamenty z dnia", "id": "Last Updated", "editable": False},
 ]
 STAGE3_FUNDAMENTAL_COLS = ["Current Price (P0)", "Target Consensus (Ti)", "Target High (T_high)", "Target Low (T_low)",
                            "Analyst Coverage (Ni)", "EPS 2Y CAGR (Gi,2Y)", "90d EPS Revision (ΔEPS90d)"]
