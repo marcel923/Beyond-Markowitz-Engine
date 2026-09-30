@@ -437,3 +437,125 @@ https://github.com/marcel923/Beyond-Markowitz-Engine/pull/8.
 Pozostały z Etap 8g: (3) panel "Połączone Portfolio".
 
 ---
+
+### Etap 8l. Auto-fill fundamentów z company_store + kalkulator pozycji (complete)
+
+Przed rebalansem (2026-09-30) właściciel poprosił o dwie niezależne zmiany:
+
+1. **Stage 3 (FUNDAMENTAL INPUTS)** przy świeżym Stage 1 nie zeruje już
+   fundamentów do 0.0 -- `build_stage3_initial_rows` (`ui/tab2_fundamentals.py`)
+   teraz czyta `company_store.get_latest(ticker)` per ticker i wypełnia
+   Target Consensus/High/Low, Analyst Coverage, EPS 2Y CAGR, 90d EPS Revision
+   tym, co było ostatnio zapisane -- z nową, nieedytowalną kolumną
+   "Fundamenty z dnia" (`ui/components.py`, `STAGE3_COLUMNS`), pokazującą datę
+   tego zapisu ("brak zapisu" gdy tickera nigdy nie zapisano). Current Price
+   (P0) wciąż ZAWSZE ze świeżego fetchu Stage 1, nigdy z company_store --
+   tylko same fundamenty są auto-uzupełniane. Ręczne nadpisania w tabeli
+   przed CONFIRM & EXPORT działają jak dotychczas (auto-fill działa
+   WYŁĄCZNIE przy świeżym Stage 1 -- reset nadpisań / zmiana modelu
+   bazowego w `sync_stage3_table` nie są tym dotknięte).
+
+2. **KALKULATOR POZYCJI** -- nowy panel w Rebalansie (Tab 4), między
+   ALLOCATION BREAKDOWN a nakładką RV (`ui/layout.py`). Czysty przelicznik:
+   widzi WYŁĄCZNIE wagi solvera (`store-stage4b-results`), ceny na żywo
+   (`fetch_current_prices`, już istniejące) i kursy walut na żywo (dwie NOWE
+   funkcje w `data/market_data.py` -- `fetch_ticker_currencies`, per-ticker
+   `.info` jak `fetch_company_profile`, i `fetch_fx_rate`, konwencja Yahoo
+   `f"{from}{to}=X"` z fallbackiem na parę odwrotną, wzorowana na
+   `fetch_treasury_yield_on_date`; obie nigdy nie podnoszą wyjątku, brak
+   danych = `None`/pominięty ticker, ten sam kontrakt co reszta modułu).
+   `shares_t = wartość_portfela * w_t * kurs(waluta_bazowa→waluta_t) / cena_t`,
+   tylko spółki z DODATNIĄ wagą solvera. `background=True` + progres (bo
+   `fetch_ticker_currencies` to wolne zapytanie per ticker), bezpieczna
+   degradacja per-wiersz ("--") gdy cena/waluta/kurs się nie rozwiąże dla
+   jednego tickera -- reszta portfela liczy się dalej. Na razie WYŁĄCZNIE
+   ułamkowe akcje -- zaokrąglenie do pełnych EXPLICITE odłożone na wyraźną
+   prośbę ("na razie zróbmy tylko ułamkowe").
+
+Zweryfikowane: `py_compile` wszystkich zmienionych plików, `import app`,
+`scripts/check_duplicate_outputs.py` (218 unikalnych targetów Output, 0
+konfliktów), Dash 3.4.0 potwierdzony. PR:
+https://github.com/marcel923/Beyond-Markowitz-Engine/pull/9.
+
+Pozostały z Etap 8g: (3) panel "Połączone Portfolio" -- wciąż odłożone,
+explicite potwierdzone jako niepilne przy tej samej prośbie.
+
+---
+
+### Etap 8m. Panele stabilności Sobola: werdykt odporny na outliery (gęstość/HDR) + wykrywanie dwukierunkowości (complete)
+
+Ten sam dzień (2026-09-30), punkt 1 z priorytetowej listy właściciela --
+explicite oznaczony jako priorytet, ale z prośbą "trzeba się dokładniej
+zastanowić jak ma to działać" zanim zacznę implementować. Propozycja
+(gęstość via KDE/HDR + porównanie z najgorszymi) przedstawiona w czacie z
+dwoma wypracowanymi przykładami liczbowymi i 4 pytaniami doprecyzowującymi;
+odpowiedzi właściciela: (1) domyślnie 80% pokrycia jądra gęstości, ale z
+suwakiem, nie na sztywno; (2) dół ("najgorsze") jako OSOBNA, niezależna
+kontrolka, nie związana z % górnego percentyla; (3) trzeci kolor na
+wykresie punktowym dla dolnych punktów; (4) dobór dokładnej metody
+wykrywania dwukierunkowości pozostawiony mnie, z prośbą o dokładne
+wytłumaczenie.
+
+**Problem, który to naprawia:** stary werdykt STABILNE/UMIARKOWANE/
+NIESTABILNE (Etap 8i) liczył surowy min-max SPAN punktów top-N% na osi
+parametru jako % pełnego zakresu suwaka -- jeden punkt, który trafił do
+top-N% przypadkiem (np. przez interakcję z innym parametrem) na ekstremalnej
+wartości, mógł samodzielnie przerzucić werdykt z STABILNE na NIESTABILNE,
+nawet gdy 39/40 punktów siedziało w wąskim paśmie.
+
+**Rozwiązanie -- jedno wspólne obliczenie dla obu asków:** `_hdr_regions()`
+(`ui/tab5_sandbox.py`) liczy Highest-Density Region przy pokryciu `q`
+(domyślnie 80%, suwak 50-95%) przez dopasowanie 1D Gaussian KDE
+(`scipy.stats.gaussian_kde`, reguła Scotta, zero ręcznego tuningu) i
+przycięcie go od góry gęstości, aż skumulowana masa osiągnie `q`% -- to
+jest standardowa konstrukcja HDI/credible region ze statystyki bayesowskiej
+(ta sama idea co `arviz.hdi`). Jedno to obliczenie odpowiada na oba
+pytania naraz:
+- **Odporność na outliery:** pojedynczy punkt ma tylko własny, niski,
+  jednokrzywkowy wkład do gęstości, podczas gdy prawdziwy klaster wzmacnia
+  się przez nakładanie się jąder -- więc komórki siatki o najwyższej
+  gęstości prawie zawsze pochodzą z prawdziwego klastra, nie z pojedynczego
+  outliera, który przy pokryciu <95% zwykle nigdy nie zostaje włączony do
+  HDR. Surowy min-max jest wciąż pokazywany jako mała, nie-alarmująca
+  notka (widoczność outliera bez wpływu na werdykt).
+- **Dwukierunkowość:** przycinanie powierzchni gęstości może naturalnie
+  zwrócić WIĘCEJ NIŻ JEDEN rozłączny region, gdy próbka jest faktycznie
+  bimodalna (dobre przebiegi klastrują się w dwóch miejscach) -- bez
+  osobnej, sztucznej heurystyki "szukaj przerwy". `_classify_direction()`
+  porównuje HDR top-N% i dołu-N%: silne nakładanie -> "BEZ WYRAŹNEGO
+  WPŁYWU" (parametr nie decyduje o wyniku); top-N% rozbity na 2+ regiony ->
+  "DWUKIERUNKOWY" (wzmocnione, gdy dół-N% siedzi akurat w przerwie między
+  nimi); inaczej -- "JEDNOKIERUNKOWY".
+
+**Inne metody rozważone (wyjaśnione właścicielowi w czacie, NIE
+zaimplementowane -- KDE/HDR uznane za wystarczające i najlepiej pasujące do
+słowa "gęstość" z prośby):** odporne miary rozrzutu (IQR, MAD, trimmed/
+winsorized range) jako prostsza alternatywa dla HDR; formalne testy
+multimodalności (Hartiganowski dip test, kryterium pasma krytycznego
+Silvermana, Gaussian Mixture Models + BIC/AIC); testy porównania dwóch
+rozkładów (Kolmogorov-Smirnov, Mann-Whitney U, odległość Wassersteina) jako
+alternatywa dla prostego overlap-ratio między HDR górą/dołem; klastrowanie
+(k-means/k-medoids + statystyka gap/silhouette) jako alternatywa dla
+przycinania gęstości przy wykrywaniu liczby "reżimów".
+
+Oba panele (Sortino i CAGR) dostały to samo trzykrotne rozszerzenie, każdy
+z własnym, niezależnym zestawem kontrolek (ten sam wzorzec co reszta pliku
+-- panele nigdy nie dzielą stanu). Zero nowych wywołań solvera -- czysta
+wizualizacja/reinterpretacja danych, które `run_sobol_batch` już policzył.
+
+Zweryfikowane: `py_compile`, `import app`, `scripts/check_duplicate_outputs.py`
+(218 unikalnych targetów Output, 0 konfliktów -- zero nowych Outputów, tylko
+nowe Inputy do dwóch istniejących callbacków rebuild), oraz syntetyczny test
+odtwarzający obydwa przykłady liczbowe z propozycji w czacie: surowy span
+63% zwija się do 14% (robust/STABILNE) po odrzuceniu jednego outliera;
+faktycznie bimodalna próbka poprawnie zwraca dwa rozłączne regiony HDR, z
+dołem-N% wykrytym w przerwie między nimi -> DWUKIERUNKOWY.
+
+Ta zmiana poszła na TĘ SAMĄ gałąź/PR co Etap 8l (`PR #9` wciąż niezmergowany
+w momencie tej pracy -- zasada "nowa gałąź po merge" z Etap 8j/8k nie
+dotyczy jeszcze niezmergowanego PR-a). PR:
+https://github.com/marcel923/Beyond-Markowitz-Engine/pull/9.
+
+Pozostały z Etap 8g: (3) panel "Połączone Portfolio" -- wciąż odłożone.
+
+---

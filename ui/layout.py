@@ -690,6 +690,41 @@ app.layout = html.Div(style={
                         html.Hr(style={"border": "none", "borderTop": f"1px solid {THEME['border']}", "margin": "10px 0 30px 0"}),
 
                         html.Div(style={"padding": "22px", "backgroundColor": THEME["bg_card"], "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}", "marginBottom": "20px"}, children=[
+                            html.Div("KALKULATOR POZYCJI (NA ŻYWYCH CENACH I KURSACH WALUT)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "1px", "marginBottom": "10px"}),
+                            html.Div(
+                                "Przelicza wagi solvera powyżej na dokładne pozycje: wartość_portfela × w_i × kurs(waluta_bazowa→waluta_tickera) "
+                                "/ cena_bieżąca_tickera. Ceny i kursy walut pobierane na żywo (to jedyny kosztowny krok -- osobny przycisk z "
+                                "postępem). Na razie WYŁĄCZNIE ułamkowe akcje -- zaokrąglenie do pełnych akcji jeszcze nie zrobione. To czysty "
+                                "przelicznik, nie zmienia wag solvera i nie jest rekomendacją transakcyjną.",
+                                style={"fontSize": "11px", "color": THEME["text_dim"], "lineHeight": "1.6", "marginBottom": "14px"}
+                            ),
+                            html.Div(style={"display": "flex", "gap": "14px", "alignItems": "flex-end", "flexWrap": "wrap", "marginBottom": "12px"}, children=[
+                                html.Div(style={"minWidth": "160px"}, children=[
+                                    html.Div("Wartość portfela", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Input(id="input-poscalc-value", type="number", value=100000, min=0, step=1000, style={
+                                        "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border_strong']}",
+                                        "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box"
+                                    }),
+                                ]),
+                                html.Div(style={"minWidth": "120px"}, children=[
+                                    html.Div("Waluta bazowa", style={"fontSize": "10.5px", "color": THEME["text_label"], "marginBottom": "5px"}),
+                                    dcc.Input(id="input-poscalc-base-ccy", type="text", value="USD", maxLength=3, style={
+                                        "width": "100%", "padding": "8px 10px", "backgroundColor": THEME["bg_input"], "border": f"1px solid {THEME['border_strong']}",
+                                        "borderRadius": "4px", "color": THEME["text_white"], "fontSize": "12.5px", "boxSizing": "border-box", "textTransform": "uppercase"
+                                    }),
+                                ]),
+                                html.Button("PRZELICZ POZYCJE", id="btn-run-poscalc", n_clicks=0, style={
+                                    "padding": "10px 20px", "backgroundColor": THEME["accent"], "color": "#FFFFFF",
+                                    "border": "none", "borderRadius": "4px", "fontSize": "12px", "fontWeight": "700", "cursor": "pointer", "height": "38px"
+                                }),
+                            ]),
+                            html.Div(id="poscalc-status", style={"fontSize": "12px", "marginBottom": "14px"}),
+                            html.Div(id="poscalc-results"),
+                        ]),
+
+                        html.Hr(style={"border": "none", "borderTop": f"1px solid {THEME['border']}", "margin": "10px 0 30px 0"}),
+
+                        html.Div(style={"padding": "22px", "backgroundColor": THEME["bg_card"], "borderRadius": "4px", "border": f"1px solid {THEME['border_strong']}", "marginBottom": "20px"}, children=[
                             html.Div("RELATIVE VALUE -- NAKŁADKA PO OPTYMALIZACJI (WYŁĄCZNIE INFORMACYJNE)", style={"fontSize": "10px", "fontWeight": "bold", "color": THEME["text_dim"], "letterSpacing": "1px", "marginBottom": "10px"}),
                             html.Div(
                                 "Sprawdza, spośród spółek z DODATNIĄ wagą od solvera, które tworzą parę dopuszczalną do skojarzenia "

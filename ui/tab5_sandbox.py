@@ -15,11 +15,12 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from scipy.stats import gaussian_kde
 from dash import dcc, html, dash_table
 from dash.dependencies import Input, Output, State
 
 from ui.app_instance import app, cache
-from ui.theme import THEME
+from ui.theme import THEME, CHART_COLORS
 from ui.components import build_kpi_card, build_kpi_strip, datatable_style_header, datatable_style_cell, datatable_style_data, datatable_row_alt_rule, build_pair_overlay_output, build_tps_formula_breakdown
 from engine.risk import compute_estrada_matrix, compute_crash_overlap_matrix
 from engine.optimizer import run_optimization_with_singleton_split
@@ -878,12 +879,28 @@ _SOBOL_STABILITY_CACHE_KEY = "sobol_stability_raw_v1"
 
 STABILITY_PCT_OPTIONS = [10, 7.5, 5, 2.5]
 
+# Confirmed 2026-09-30 (Etap 8m): domyślne pokrycie jądra gęstości (HDR, patrz
+# _hdr_regions poniżej) -- user explicitly asked for a slider to adjust this,
+# not a hardcoded constant, so DENSITY_Q_DEFAULT is only the slider's starting
+# position.
+DENSITY_Q_DEFAULT = 80
+DENSITY_Q_MIN, DENSITY_Q_MAX, DENSITY_Q_STEP = 50, 95, 5
 
-def _stability_controls(preset_id, custom_id):
+# Fixed marker color for bottom-N% (worst) points in the stability scatter --
+# deliberately NOT one of THEME's semantic pos/neg/warn colors (those are
+# reserved for the top-N% verdict), so "worst" always reads as its own,
+# consistent third color regardless of that parameter's stability verdict.
+BOTTOM_MARKER_COLOR = CHART_COLORS[1]  # "#B983FF", muted purple
+
+
+def _stability_controls(preset_id, custom_id, label="Podświetl top:"):
     """Preset-% radio + free-text custom-% field, shared layout for the
-    Sortino and CAGR stability panels below (same-day CAGR twin, 2026-09-28)."""
+    Sortino and CAGR stability panels below (same-day CAGR twin, 2026-09-28).
+    `label` added 2026-09-30 so the same builder serves both the top-N% and
+    the new, independent bottom-N% ("najgorsze") control -- same widget,
+    different wording and different component ids at the call site."""
     return html.Div([
-        html.Span("Podświetl top:", style={"fontSize": "10px", "color": THEME["text_label"], "marginRight": "8px"}),
+        html.Span(label, style={"fontSize": "10px", "color": THEME["text_label"], "marginRight": "8px"}),
         dcc.RadioItems(
             id=preset_id,
             options=[{"label": f" {p:g}%  ", "value": p} for p in STABILITY_PCT_OPTIONS],
@@ -903,36 +920,261 @@ def _stability_controls(preset_id, custom_id):
     ], style={"marginBottom": "10px"})
 
 
-def _build_stability_panel(sample, raw_outputs, param_ranges, pct, metric="Sortino"):
+def _density_slider_control(slider_id):
+    """New control (Etap 8m, 2026-09-30): coverage `q` of the density-based
+    HDR (_hdr_regions) that now drives the stability verdict instead of a
+    raw min-max span. Explicit user request: "domyślnie 80% ale daj też
+    suwak" -- 80% start, freely adjustable 50-95% (below 50% the region
+    becomes too small to call a "stable band" in any useful sense; above
+    95% it starts re-admitting the single-outlier problem this whole
+    change exists to fix)."""
+    return html.Div([
+        html.Span("Jądro gęstości obejmuje:", style={"fontSize": "10px", "color": THEME["text_label"], "marginRight": "10px"}),
+        html.Div(
+            dcc.Slider(
+                id=slider_id, min=DENSITY_Q_MIN, max=DENSITY_Q_MAX, step=DENSITY_Q_STEP, value=DENSITY_Q_DEFAULT,
+                marks={v: f"{v}%" for v in range(DENSITY_Q_MIN, DENSITY_Q_MAX + 1, 10)},
+                tooltip={"placement": "bottom", "always_visible": False},
+            ),
+            style={"width": "230px", "display": "inline-block", "verticalAlign": "middle"},
+        ),
+    ], style={"marginBottom": "10px", "display": "flex", "alignItems": "center"})
+
+
+def _stability_controls_group(top_preset_id, top_custom_id, bottom_preset_id, bottom_custom_id, q_slider_id):
+    """Groups the three independent controls one stability panel now needs:
+    top-% (existing), bottom-% (new, independent per explicit request -- NOT
+    tied to the top-% value), and the density-coverage slider (new). Kept as
+    three separate widgets rather than one combined control, exactly per the
+    user's own three answers (80%-default-plus-slider / separate bottom
+    control / third color) -- this function only lays them out together."""
+    return html.Div([
+        _stability_controls(top_preset_id, top_custom_id, label="Podświetl top:"),
+        _stability_controls(bottom_preset_id, bottom_custom_id, label="Porównaj z dołem (najgorsze):"),
+        _density_slider_control(q_slider_id),
+    ], style={"display": "flex", "flexWrap": "wrap", "gap": "28px", "alignItems": "flex-start", "marginBottom": "4px"})
+
+
+def _hdr_regions(values, lo, hi, q, grid_n=400):
     """
-    Confirmed 2026-09-28 (Etap 8i), proposed in PROJECT_CONTEXT_2.md Etap 8g
-    point 1: for each of the 8 solver parameters, a small scatter of
-    (parameter value in that run, `metric` of that run) across every run in
-    the last Sobol batch, with the top `pct`% by `metric` highlighted. A tight
-    cluster of highlighted points in a narrow band of some parameter's axis
-    says "stable, trustworthy signal"; highlighted points scattered across
-    the whole axis (same spread as the greyed-out background) says "this
-    parameter doesn't actually decide the outcome -- good runs happen at any
-    value of it". Zero additional solver calls -- pure visualization of data
-    run_sobol_batch already computed.
+    Highest-Density Region (HDR) at coverage `q` (0-100) for a 1D sample of
+    parameter values, restricted to the parameter's configured slider range
+    [lo, hi] -- confirmed 2026-09-30 (Etap 8m), replaces the old raw min-max
+    span as the stability panels' core stability measure, and doubles as the
+    input to the new two-sided/"kierunek" check in _classify_direction below.
 
-    `metric`: same-day addition (2026-09-28) -- "Sortino" (default) or "CAGR",
-    whichever column of raw_outputs to rank/plot by. The two are independent
-    panels in results_layout below (own highlight-% controls each), not a
-    toggle on one panel -- the point was literally "the same charts, for CAGR
-    too", and CAGR/Sortino can disagree on which runs are "best".
+    This is the standard "highest density interval/region" construction from
+    Bayesian statistics (same idea `arviz.hdi` or a credible-region plot
+    uses): fit a 1D Gaussian KDE to the sample (scipy.stats.gaussian_kde,
+    Scott's rule bandwidth -- no manual tuning needed), evaluate it on a
+    fine grid across [lo, hi], then threshold DOWNWARD from the highest
+    density value, accumulating grid cells (by density, highest first)
+    until their cumulative probability mass reaches `q`% of the total mass
+    over [lo, hi] (mass the KDE puts outside [lo, hi] -- e.g. near a
+    boundary -- is simply not part of this grid and is implicitly excluded,
+    since only the configured slider range is a valid parameter value here).
 
-    This shows CORRELATION, not causation -- with all 8 parameters varying
-    together per Saltelli sample, an apparent cluster could be driven by an
-    interaction with another parameter rather than this one alone. That's
-    exactly what the existing S1 (own effect) / ST (own effect + interactions)
-    bar charts and PRCC table already measure formally; this panel is a
-    visual complement to them, not a replacement -- read together.
+    Thresholding a density surface (instead of taking a single min-max
+    interval of raw points) can naturally return MULTIPLE disjoint regions
+    when the density has more than one peak. That one property is what
+    answers BOTH of the user's asks with a single computation:
+      - "measure density, don't let one outlier decide the verdict": a lone
+        outlier contributes only its own, low, single-kernel density bump,
+        while a genuine cluster of nearby points reinforces itself (Gaussian
+        kernels overlap and stack), so the top-mass grid cells overwhelmingly
+        get picked from the real cluster first -- the outlier's region is
+        typically never even reached at 80% coverage.
+      - "does a parameter work in two directions / give best AND worst at
+        the same time": if the sample genuinely clusters in two separate
+        places (each cluster tall/wide enough to carry real probability
+        mass), thresholding naturally returns TWO disjoint regions -- no
+        separate ad hoc "look for a gap" heuristic needed, it falls out of
+        the same HDR computation used for the stability number.
+
+    Returns (regions, total_width_frac): `regions` is a list of
+    (region_lo, region_hi) tuples in ascending order (grid-resolution
+    accurate; always non-empty for n>=1 finite values), `total_width_frac`
+    is the combined width of all regions divided by (hi-lo) -- this REPLACES
+    the old `span_pct` in the caller. Falls back to a plain (min, max)
+    single region -- i.e. the OLD behavior -- when there are fewer than 4
+    finite values (not enough to fit a meaningful KDE) or they're all
+    (near-)identical; never raises.
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    span = (hi - lo) if hi > lo else 1.0
+    n = len(values)
+    if n == 0:
+        return [], 0.0
+    if n < 4 or (values.max() - values.min()) < 1e-12:
+        v_lo, v_hi = float(values.min()), float(values.max())
+        return [(v_lo, v_hi)], (v_hi - v_lo) / span
+
+    try:
+        kde = gaussian_kde(values)
+        grid = np.linspace(lo, hi, grid_n)
+        density = kde(grid)
+    except Exception:
+        v_lo, v_hi = float(values.min()), float(values.max())
+        return [(v_lo, v_hi)], (v_hi - v_lo) / span
+
+    dx = (hi - lo) / (grid_n - 1) if grid_n > 1 else span
+    total_mass = float(density.sum() * dx)
+    if total_mass <= 0 or not np.isfinite(total_mass):
+        v_lo, v_hi = float(values.min()), float(values.max())
+        return [(v_lo, v_hi)], (v_hi - v_lo) / span
+
+    target_mass = (q / 100.0) * total_mass
+    order = np.argsort(density)[::-1]  # highest density first
+    included = np.zeros(grid_n, dtype=bool)
+    cum = 0.0
+    for idx in order:
+        included[idx] = True
+        cum += density[idx] * dx
+        if cum >= target_mass:
+            break
+
+    regions = []
+    in_region, start = False, None
+    for i in range(grid_n):
+        if included[i] and not in_region:
+            in_region, start = True, grid[i]
+        elif not included[i] and in_region:
+            in_region = False
+            regions.append((start, grid[i - 1]))
+    if in_region:
+        regions.append((start, grid[-1]))
+    if not regions:  # defensive -- shouldn't happen once target_mass>0, but never raise
+        v_lo, v_hi = float(values.min()), float(values.max())
+        return [(v_lo, v_hi)], (v_hi - v_lo) / span
+
+    total_width = sum(b - a for a, b in regions)
+    return regions, total_width / span
+
+
+def _classify_direction(top_regions, bottom_regions, lo, hi):
+    """
+    "Kierunek" verdict (Etap 8m, 2026-09-30) -- the user's point 1 ask:
+    "czy może parametr nie działa w dwie strony i może jednocześnie dać
+    najlepsze jak i najgorsze wartości". Built entirely on the HDR regions
+    _hdr_regions already computed for top-N% and bottom-N% -- no separate
+    model fit.
+
+    Three outcomes:
+      - "BEZ WYRAŹNEGO WPŁYWU": top-N%'s and bottom-N%'s HDRs overlap by
+        more than half of the top region's own width -- best and worst runs
+        come from the same place on this parameter's axis, so it isn't
+        discriminating outcome quality here (this can fire even when the
+        top-N% band itself is narrow -- a narrow band that ALSO produces
+        the worst outcomes is exactly "this parameter doesn't matter", not
+        "stable", which is why this check runs before the stability verdict
+        would otherwise get the last word).
+      - "DWUKIERUNKOWY": top-N%'s HDR itself is multi-region (after merging
+        regions closer together than 2% of the axis -- grid noise, not a
+        real second band) -- i.e. good runs cluster in more than one place.
+        When bottom-N%'s HDR sits specifically IN THE GAP between the top
+        regions, that's a strong, explicit confirmation (classic U-shape:
+        both extremes good, middle bad); otherwise it's still reported, with
+        a softer note pointing at a likely interaction with another
+        parameter as the more probable explanation.
+      - "JEDNOKIERUNKOWY": top-N% is a single region and doesn't overlap
+        much with bottom-N% -- the ordinary, single-direction case.
+
+    Returns (label, color, note) -- `note` is "" when there's nothing extra
+    to say (e.g. no bottom-N% sample was available to compare against).
+    """
+    if not top_regions:
+        return "BRAK DANYCH", THEME["text_dim"], ""
+
+    def _width(regions):
+        return sum(b - a for a, b in regions)
+
+    def _overlap(regions_a, regions_b):
+        total = 0.0
+        for a0, a1 in regions_a:
+            for b0, b1 in regions_b:
+                total += max(0.0, min(a1, b1) - max(a0, b0))
+        return total
+
+    top_w = _width(top_regions)
+    overlap_ratio = (_overlap(top_regions, bottom_regions) / top_w) if (bottom_regions and top_w > 0) else 0.0
+
+    if bottom_regions and overlap_ratio > 0.5:
+        return "BEZ WYRAŹNEGO WPŁYWU", THEME["text_dim"], "najlepsze i najgorsze przebiegi trafiają w te same wartości tego parametru"
+
+    span = hi - lo
+    min_region_width = 0.01 * span
+    merge_gap = 0.02 * span
+    sig_regions = sorted((a, b) for a, b in top_regions if (b - a) >= min_region_width) or sorted(top_regions)
+    merged = []
+    for a, b in sig_regions:
+        if merged and a - merged[-1][1] <= merge_gap:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+
+    if len(merged) >= 2:
+        gaps = [(merged[i][1], merged[i + 1][0]) for i in range(len(merged) - 1)]
+        note = "brak dołu do porównania"
+        if bottom_regions:
+            bottom_mid = sum((a + b) / 2.0 for a, b in bottom_regions) / len(bottom_regions)
+            if any(g0 <= bottom_mid <= g1 for g0, g1 in gaps):
+                note = "najgorsze przebiegi skupiają się właśnie pomiędzy tymi pasmami -- silne potwierdzenie"
+            else:
+                note = "dół nie leży w przerwie -- sprawdź, czy o wyborze pasma decyduje inny parametr (interakcja)"
+        return "DWUKIERUNKOWY", THEME["warn"], note
+
+    if bottom_regions:
+        return "JEDNOKIERUNKOWY", THEME["pos"], "najlepsze i najgorsze przebiegi trzymają się osobnych pasm"
+    return "JEDNOKIERUNKOWY", THEME["pos"], ""
+
+
+def _build_stability_panel(sample, raw_outputs, param_ranges, pct_top, pct_bottom, q, metric="Sortino"):
+    """
+    Confirmed 2026-09-28 (Etap 8i); REDESIGNED 2026-09-30 (Etap 8m) to fix an
+    outlier-fragility problem the owner flagged: the original verdict was the
+    raw min-max SPAN of the top-`pct_top`% points on a parameter's axis, so a
+    single point that landed in the top-N% by pure chance (e.g. through a
+    strong interaction with another parameter) but sits at an extreme value
+    could single-handedly flip a genuinely tight cluster's verdict from
+    STABILNE to NIESTABILNE. Also added, same request: a second, independent
+    bottom-`pct_bottom`% ("najgorsze") sample, to check whether a parameter
+    "works in two directions" -- clusters BOTH the best and the worst runs,
+    just in different places, rather than simply not mattering.
+
+    Both asks are now answered by ONE shared computation: `_hdr_regions`
+    (Highest-Density Region at coverage `q`, via a Gaussian KDE -- see its
+    own docstring for the full rationale) run once on the top-N% sample and
+    once on the bottom-N% sample, for each parameter:
+      - The stability verdict below now comes from the top-N% HDR's total
+        width (as % of the full slider range), NOT the raw min-max -- a lone
+        outlier typically carries too little density to be pulled into the
+        HDR at all, so it no longer drives the verdict. The raw min-max is
+        still shown, as a small non-alarming footnote, whenever it differs
+        materially from the HDR (so outliers stay visible, just not decisive).
+      - The new "kierunek" line (_classify_direction) compares the top-N% and
+        bottom-N% HDRs: heavy overlap says the parameter isn't discriminating
+        outcome quality here at all; a top-N% HDR that itself splits into two
+        separate bands says the parameter has more than one good regime
+        ("DWUKIERUNKOWY"), especially convincing when the bottom-N% HDR sits
+        specifically in the gap between them.
+
+    `metric`: "Sortino" (default) or "CAGR" -- the two are independent panels
+    in results_layout below (own controls each), not a toggle on one panel,
+    since CAGR/Sortino can disagree on which runs are "best"/"worst".
+
+    This still shows CORRELATION, not causation -- with all 8 parameters
+    varying together per Saltelli sample, an apparent cluster could be driven
+    by an interaction with another parameter rather than this one alone.
+    That's exactly what the existing S1 (own effect) / ST (own effect +
+    interactions) bar charts and PRCC table already measure formally; this
+    panel (now plus its "kierunek" line) is a visual complement to them, not
+    a replacement -- read together.
 
     Rows with solver_success=False are excluded ENTIRELY (not median-imputed
     the way the Sobol variance-decomposition math itself handles them) --
     injecting a fake median point here would visually distort where winning
-    runs actually cluster.
+    (and losing) runs actually cluster.
     """
     solver_success = raw_outputs["solver_success"].values
     metric_all = raw_outputs[metric].values
@@ -948,10 +1190,24 @@ def _build_stability_panel(sample, raw_outputs, param_ranges, pct, metric="Sorti
     metric_valid = metric_all[valid]
     sample_valid = np.asarray(sample)[valid]
 
-    n_top = max(1, round(pct / 100.0 * n_valid))
-    order = np.argsort(metric_valid)
+    n_top = max(1, round(pct_top / 100.0 * n_valid))
+    n_bottom = max(1, round(pct_bottom / 100.0 * n_valid)) if pct_bottom and pct_bottom > 0 else 0
+    if n_top + n_bottom > n_valid:
+        # Top and bottom are requested independently (explicit ask) -- if
+        # their combined size would exceed the sample (e.g. both set to a
+        # large %), scale both down proportionally rather than letting them
+        # silently overlap (a run can't be simultaneously "best" and "worst").
+        scale = n_valid / float(n_top + n_bottom)
+        n_top = max(1, int(round(n_top * scale)))
+        n_bottom = max(0, min(n_valid - n_top, int(round(n_bottom * scale))))
+
+    order = np.argsort(metric_valid)  # ascending by metric
     top_idx = order[-n_top:]
-    rest_idx = order[:-n_top]
+    bottom_idx = order[:n_bottom] if n_bottom > 0 else np.array([], dtype=int)
+    excluded = set(top_idx.tolist()) | set(bottom_idx.tolist())
+    rest_idx = np.array([i for i in range(n_valid) if i not in excluded], dtype=int)
+
+    q = q if isinstance(q, (int, float)) and 0 < q <= 100 else DENSITY_Q_DEFAULT
 
     panels = []
     for i, pname in enumerate(PARAM_ORDER):
@@ -960,9 +1216,12 @@ def _build_stability_panel(sample, raw_outputs, param_ranges, pct, metric="Sorti
         full_span = (hi - lo) if hi > lo else 1.0
 
         top_vals = col[top_idx]
-        top_lo, top_hi = float(top_vals.min()), float(top_vals.max())
-        span_pct = 100.0 * (top_hi - top_lo) / full_span
+        bottom_vals = col[bottom_idx] if n_bottom > 0 else np.array([])
 
+        top_regions, top_w_frac = _hdr_regions(top_vals, lo, hi, q)
+        bottom_regions, _ = _hdr_regions(bottom_vals, lo, hi, q) if n_bottom > 0 else ([], 0.0)
+
+        span_pct = 100.0 * top_w_frac
         if span_pct < 25:
             verdict, color = "STABILNE", THEME["pos"]
         elif span_pct < 60:
@@ -970,18 +1229,35 @@ def _build_stability_panel(sample, raw_outputs, param_ranges, pct, metric="Sorti
         else:
             verdict, color = "NIESTABILNE", THEME["neg"]
 
+        direction_label, direction_color, direction_note = _classify_direction(top_regions, bottom_regions, lo, hi)
+
+        # Raw (non-robust) min-max of top-N%, kept ONLY as an outlier-visibility
+        # footnote -- this is the old metric, and it must never again drive the
+        # verdict above (that's the exact bug this redesign fixes).
+        raw_lo, raw_hi = float(top_vals.min()), float(top_vals.max())
+        raw_span_pct = 100.0 * (raw_hi - raw_lo) / full_span
+        n_outside_core = int(sum(1 for v in top_vals if not any(a <= v <= b for a, b in top_regions)))
+        outlier_note = ""
+        if raw_span_pct - span_pct > 15 and n_outside_core > 0:
+            outlier_note = f" (surowy zakres: {raw_span_pct:.0f}%, {n_outside_core} pkt poza jądrem)"
+
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=col[rest_idx], y=metric_valid[rest_idx], mode="markers",
-            marker=dict(size=4, color=THEME["text_dim"], opacity=0.35),
+            marker=dict(size=4, color=THEME["text_dim"], opacity=0.30),
             showlegend=False, hoverinfo="skip"))
+        if n_bottom > 0:
+            fig.add_trace(go.Scatter(
+                x=bottom_vals, y=metric_valid[bottom_idx], mode="markers",
+                marker=dict(size=5, color=BOTTOM_MARKER_COLOR, opacity=0.85), showlegend=False,
+                hovertemplate=f"{pname}=%{{x:.3f}}<br>{metric}=%{{y:.3f}} (najgorsze)<extra></extra>"))
         fig.add_trace(go.Scatter(
             x=top_vals, y=metric_valid[top_idx], mode="markers",
             marker=dict(size=5, color=color, opacity=0.9), showlegend=False,
-            hovertemplate=f"{pname}=%{{x:.3f}}<br>{metric}=%{{y:.3f}}<extra></extra>"))
+            hovertemplate=f"{pname}=%{{x:.3f}}<br>{metric}=%{{y:.3f}} (najlepsze)<extra></extra>"))
         fig.update_layout(
             template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=THEME["bg_base"],
-            height=210, margin=dict(l=36, r=10, t=28, b=28),
+            height=225, margin=dict(l=36, r=10, t=28, b=28),
             title=dict(text=pname, font=dict(size=11, color=THEME["text_white"])),
             xaxis=dict(tickfont=dict(size=9, color=THEME["text_dim"])),
             yaxis=dict(title=metric, title_font=dict(size=9, color=THEME["text_dim"]),
@@ -990,13 +1266,17 @@ def _build_stability_panel(sample, raw_outputs, param_ranges, pct, metric="Sorti
 
         panels.append(html.Div([
             dcc.Graph(figure=fig, config={"displayModeBar": False}),
-            html.Div(f"top {pct:g}%: [{top_lo:.3g}, {top_hi:.3g}] = {span_pct:.0f}% pełnego zakresu -- {verdict}",
+            html.Div(f"gęstość top {pct_top:g}% (jądro {q:g}%): {span_pct:.0f}% zakresu -- {verdict}{outlier_note}",
                      style={"fontSize": "9.5px", "color": color, "textAlign": "center", "marginTop": "2px"}),
+            html.Div(f"kierunek: {direction_label}" + (f" -- {direction_note}" if direction_note else ""),
+                     style={"fontSize": "9px", "color": direction_color, "textAlign": "center", "marginTop": "1px", "fontStyle": "italic"}),
         ]))
 
     return html.Div([
-        html.Div(f"({n_valid} poprawnych przebiegów z {len(raw_outputs)}; top {pct:g}% = {n_top} podświetlonych, wg {metric})",
-                 style={"fontSize": "10px", "color": THEME["text_dim"], "marginBottom": "10px"}),
+        html.Div(
+            f"({n_valid} poprawnych przebiegów z {len(raw_outputs)}; top {pct_top:g}% = {n_top} pkt (zielone/żółte/czerwone, wg werdyktu), "
+            f"dół {pct_bottom:g}% = {n_bottom} pkt (fioletowe), jądro gęstości = {q:g}%, wg {metric})",
+            style={"fontSize": "10px", "color": THEME["text_dim"], "marginBottom": "10px"}),
         html.Div(panels, style={"display": "grid", "gridTemplateColumns": "repeat(4, 1fr)", "gap": "10px"}),
     ])
 
@@ -1082,40 +1362,55 @@ def _resolve_stability_pct(trigger_id, custom_input_id, preset_pct, custom_pct):
     Output("sobol-stability-panel", "children"),
     Input("sobol-stability-pct", "value"),
     Input("sobol-stability-custom-pct", "value"),
+    Input("sobol-stability-pct-bottom", "value"),
+    Input("sobol-stability-custom-pct-bottom", "value"),
+    Input("sobol-density-q", "value"),
     prevent_initial_call=True,
 )
-def rebuild_stability_panel(preset_pct, custom_pct):
+def rebuild_stability_panel(preset_pct, custom_pct, preset_pct_bottom, custom_pct_bottom, q):
     """Cheap redraw only -- reuses the last batch's raw data from the shared
-    diskcache (see _SOBOL_STABILITY_CACHE_KEY), never re-runs the solver."""
+    diskcache (see _SOBOL_STABILITY_CACHE_KEY), never re-runs the solver.
+    Extended 2026-09-30 (Etap 8m) with the independent bottom-% control and
+    the density-coverage slider -- both resolved the same way the existing
+    top-% control already was (whichever control the user just touched wins,
+    via _resolve_stability_pct/callback_context, called once per pct pair)."""
     cached = cache.get(_SOBOL_STABILITY_CACHE_KEY)
     if not cached:
         return dash.no_update
     trigger_id = dash.callback_context.triggered[0]["prop_id"].split(".")[0] if dash.callback_context.triggered else None
-    pct = _resolve_stability_pct(trigger_id, "sobol-stability-custom-pct", preset_pct, custom_pct)
-    return _build_stability_panel(cached["sample"], cached["raw_outputs"], cached["param_ranges"], pct, metric="Sortino")
+    pct_top = _resolve_stability_pct(trigger_id, "sobol-stability-custom-pct", preset_pct, custom_pct)
+    pct_bottom = _resolve_stability_pct(trigger_id, "sobol-stability-custom-pct-bottom", preset_pct_bottom, custom_pct_bottom)
+    q = q if isinstance(q, (int, float)) and 0 < q <= 100 else DENSITY_Q_DEFAULT
+    return _build_stability_panel(cached["sample"], cached["raw_outputs"], cached["param_ranges"], pct_top, pct_bottom, q, metric="Sortino")
 
 
 @app.callback(
     Output("sobol-stability-panel-cagr", "children"),
     Input("sobol-stability-pct-cagr", "value"),
     Input("sobol-stability-custom-pct-cagr", "value"),
+    Input("sobol-stability-pct-bottom-cagr", "value"),
+    Input("sobol-stability-custom-pct-bottom-cagr", "value"),
+    Input("sobol-density-q-cagr", "value"),
     prevent_initial_call=True,
 )
-def rebuild_stability_panel_cagr(preset_pct, custom_pct):
+def rebuild_stability_panel_cagr(preset_pct, custom_pct, preset_pct_bottom, custom_pct_bottom, q):
     """
     Same-day addition (2026-09-28): "te same wykresy ale dla CAGR" -- an
     independent CAGR-ranked twin of rebuild_stability_panel above, own
     highlight-% controls, same cached raw data, zero extra solver calls.
     A run can rank very differently by CAGR vs. by Sortino (CAGR ignores
     downside shape entirely), so this is a second panel, not a toggle on
-    the first one.
+    the first one. Extended 2026-09-30 (Etap 8m) the same way as its Sortino
+    twin -- own independent bottom-% control and density slider.
     """
     cached = cache.get(_SOBOL_STABILITY_CACHE_KEY)
     if not cached:
         return dash.no_update
     trigger_id = dash.callback_context.triggered[0]["prop_id"].split(".")[0] if dash.callback_context.triggered else None
-    pct = _resolve_stability_pct(trigger_id, "sobol-stability-custom-pct-cagr", preset_pct, custom_pct)
-    return _build_stability_panel(cached["sample"], cached["raw_outputs"], cached["param_ranges"], pct, metric="CAGR")
+    pct_top = _resolve_stability_pct(trigger_id, "sobol-stability-custom-pct-cagr", preset_pct, custom_pct)
+    pct_bottom = _resolve_stability_pct(trigger_id, "sobol-stability-custom-pct-bottom-cagr", preset_pct_bottom, custom_pct_bottom)
+    q = q if isinstance(q, (int, float)) and 0 < q <= 100 else DENSITY_Q_DEFAULT
+    return _build_stability_panel(cached["sample"], cached["raw_outputs"], cached["param_ranges"], pct_top, pct_bottom, q, metric="CAGR")
 
 
 @app.callback(
@@ -1300,19 +1595,25 @@ def run_sobol_analysis(set_progress, _n_clicks, snapshot_id, horizon_label, n_va
         html.Div(_build_best_combo_readout(sobol_result["raw_sample"], sobol_result["raw_outputs"]),
                  style={"marginBottom": "8px"}),
 
-        html.Div("PANEL STABILNOŚCI PARAMETRÓW (Sortino) -- gdzie klastrują się najlepsze wyniki",
+        html.Div("PANEL STABILNOŚCI PARAMETRÓW (Sortino) -- gdzie klastrują się najlepsze (i najgorsze) wyniki",
                  style={"fontSize": "11px", "fontWeight": "bold", "color": THEME["text_white"], "marginBottom": "8px", "marginTop": "24px"}),
-        _stability_controls("sobol-stability-pct", "sobol-stability-custom-pct"),
+        _stability_controls_group("sobol-stability-pct", "sobol-stability-custom-pct",
+                                    "sobol-stability-pct-bottom", "sobol-stability-custom-pct-bottom",
+                                    "sobol-density-q"),
         html.Div(id="sobol-stability-panel",
                   children=_build_stability_panel(sobol_result["raw_sample"], sobol_result["raw_outputs"],
-                                                    param_ranges, STABILITY_PCT_OPTIONS[0], metric="Sortino")),
+                                                    param_ranges, STABILITY_PCT_OPTIONS[0], STABILITY_PCT_OPTIONS[0],
+                                                    DENSITY_Q_DEFAULT, metric="Sortino")),
 
-        html.Div("PANEL STABILNOŚCI PARAMETRÓW (CAGR) -- gdzie klastrują się najlepsze wyniki",
+        html.Div("PANEL STABILNOŚCI PARAMETRÓW (CAGR) -- gdzie klastrują się najlepsze (i najgorsze) wyniki",
                  style={"fontSize": "11px", "fontWeight": "bold", "color": THEME["text_white"], "marginBottom": "8px", "marginTop": "24px"}),
-        _stability_controls("sobol-stability-pct-cagr", "sobol-stability-custom-pct-cagr"),
+        _stability_controls_group("sobol-stability-pct-cagr", "sobol-stability-custom-pct-cagr",
+                                    "sobol-stability-pct-bottom-cagr", "sobol-stability-custom-pct-bottom-cagr",
+                                    "sobol-density-q-cagr"),
         html.Div(id="sobol-stability-panel-cagr",
                   children=_build_stability_panel(sobol_result["raw_sample"], sobol_result["raw_outputs"],
-                                                    param_ranges, STABILITY_PCT_OPTIONS[0], metric="CAGR")),
+                                                    param_ranges, STABILITY_PCT_OPTIONS[0], STABILITY_PCT_OPTIONS[0],
+                                                    DENSITY_Q_DEFAULT, metric="CAGR")),
     ])
 
     horizon_display = "od początku" if horizon_label == "since_inception" else horizon_label

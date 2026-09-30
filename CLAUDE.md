@@ -157,20 +157,22 @@ Zaproponuj krótki wpis do `PROJECT_CONTEXT_2.md` w tym samym stylu co
 istniejące (kolejny numerowany "Etap", dopisany na końcu, nic wcześniejszego
 nie ruszane). Pokaż go i POCZEKAJ na potwierdzenie, zanim go dopiszesz.
 
-## Otwarte priorytety (zaktualizowane 2026-09-28)
+## Otwarte priorytety (zaktualizowane 2026-09-30)
 
 1. [GŁÓWNY] Rozwinięcie zakładki "ANALIZA SOBOLA", ostatni z 3 punktów
    propozycji z `PROJECT_CONTEXT_2.md` Etap 8g: panel "Połączone Portfolio"
    (ręczne łączenie kilku zapisów w jedną krzywą equity przez podmianę na
    dacie utworzenia, bez wygładzania), osobna zakładka-siostra Forward
-   Trackera, celowo odseparowana od mechanizmu Sobola. Punkt 1 (panel
-   stabilności parametrów vs Sortino) i punkt 2 (R_f -> hurdle rate +
-   auto-pobieranie ^TNX) już zrobione -- patrz Etap 8h/8i.
+   Trackera, celowo odseparowana od mechanizmu Sobola. Explicite potwierdzone
+   jako niepilne 2026-09-30 -- nie zaczynać bez nowej prośby. Punkt 1 (panel
+   stabilności parametrów vs Sortino, od Etap 8m też z gęstością/HDR i
+   kierunkiem) i punkt 2 (R_f -> hurdle rate + auto-pobieranie ^TNX) już
+   zrobione -- patrz Etap 8h/8i/8m.
 2. Kalibracja `MATCH_MIN_WINDOWS`/`MATCH_MIN_T_STATISTIC` na realnym
    uniwersum -- niepilne, nakładka RV to dziś ostatni krok procesu, nie kluczowy.
 
 **Zrobione od ostatniej aktualizacji tej listy** (patrz `PROJECT_CONTEXT_2.md`
-Etap 8d/8e/8f/8h/8i/8j dla szczegółów): nakładka RV trafia teraz zawsze do zapisu
+Etap 8d-8m dla szczegółów): nakładka RV trafia teraz zawsze do zapisu
 snapshotu; dodano `QT_STORAGE_ROOT` do bezpiecznych sesji testowych bez
 ręcznego czyszczenia `storage/`; baseline regresji solvera z Etap 8a
 POTWIERDZONY 2026-09-28 jako nowy punkt odniesienia (Etap 8f, patrz
@@ -178,4 +180,9 @@ Konwencje wyżej); R_f przemianowane na hurdle rate + auto-pobieranie
 historycznej rentowności ^TNX w Sandboxie (Etap 8h); panel stabilności
 parametrów vs Sortino (i CAGR, Etap 8j) w zakładce ANALIZA SOBOLA + readout
 najlepszej kombinacji parametrów + własne wartości poza zakresem suwaków w
-Sandboxie (Etap 8i/8j).
+Sandboxie (Etap 8i/8j); fundamenty w Stage 3 auto-uzupełniane z
+`company_store.get_latest` + kolumna daty zapisu, i nowy KALKULATOR POZYCJI
+(wagi solvera -> ułamkowe akcje, z kursami walut) w Rebalansie (Etap 8l);
+panele stabilności Sobola przeprojektowane na werdykt odporny na outliery
+(gęstość/HDR via KDE, suwak pokrycia) + wykrywanie dwukierunkowości
+parametru przez porównanie z najgorszymi przebiegami (Etap 8m).

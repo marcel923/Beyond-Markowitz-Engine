@@ -54,7 +54,23 @@ def compute_stage3_baseline_clusters(baseline_key, k, monthly_returns_data, dail
 
 
 def build_stage3_initial_rows(tickers, cluster_map, raw_close_data):
-    """Buduje wiersze tabeli dla nowego uniwersum tickerów (świeży Stage 1). Fundamenty = twarde 0 (żadnych fallbacków)."""
+    """
+    Buduje wiersze tabeli dla nowego uniwersum tickerów (świeży Stage 1).
+
+    Confirmed 2026-09-30: fundamenty (Target Consensus/High/Low, Analyst
+    Coverage, EPS CAGR, EPS Revision) są teraz auto-uzupełniane z
+    `company_store.get_latest(ticker)` -- czyli z NAJŚWIEŻSZEGO wcześniej
+    zapisanego wpisu tego tickera (jeśli w ogóle istnieje), zamiast zawsze
+    zerować je do 0.0. "Current Price (P0)" ZAWSZE z `raw_close_data` (świeży
+    fetch ze Stage 1), NIGDY z company_store -- cena ma być dzisiejsza,
+    fundamenty najświeższe zapisane. Kolumna "Last Updated" pokazuje datę
+    tego zapisu ("brak zapisu" gdy ticker nie ma żadnej historii), żeby było
+    od razu widać, że to NIE dzisiejsze dane -- użytkownik wciąż może je
+    ręcznie nadpisać w tabeli przed CONFIRM & EXPORT, dokładnie jak
+    wcześniej. Ten auto-fill działa WYŁĄCZNIE tutaj (świeży Stage 1) --
+    zmiana modelu bazowego / reset nadpisań w sync_stage3_table poniżej
+    nigdy nie dotykają już zatwierdzonych/edytowanych wartości w tabeli.
+    """
     last_prices = {}
     if raw_close_data:
         prices_df = pd.DataFrame(raw_close_data).set_index('Date')
@@ -65,12 +81,18 @@ def build_stage3_initial_rows(tickers, cluster_map, raw_close_data):
 
     rows = []
     for t in tickers:
+        latest = comp.get_latest(t)
         rows.append({
             "Ticker": t,
             "Assigned Cluster": cluster_map.get(t, 1),
             "Current Price (P0)": last_prices.get(t, 0.0),
-            "Target Consensus (Ti)": 0.0, "Target High (T_high)": 0.0, "Target Low (T_low)": 0.0,
-            "Analyst Coverage (Ni)": 0, "EPS 2Y CAGR (Gi,2Y)": 0.0, "90d EPS Revision (ΔEPS90d)": 0.0
+            "Target Consensus (Ti)": latest.get("Target_Consensus", 0.0) if latest else 0.0,
+            "Target High (T_high)": latest.get("Target_High", 0.0) if latest else 0.0,
+            "Target Low (T_low)": latest.get("Target_Low", 0.0) if latest else 0.0,
+            "Analyst Coverage (Ni)": latest.get("N_analysts", 0) if latest else 0,
+            "EPS 2Y CAGR (Gi,2Y)": latest.get("EPS_CAGR", 0.0) if latest else 0.0,
+            "90d EPS Revision (ΔEPS90d)": latest.get("EPS_Rev_90d", 0.0) if latest else 0.0,
+            "Last Updated": latest.get("Date", "brak zapisu") if latest else "brak zapisu",
         })
     return rows
 
@@ -143,6 +165,7 @@ def sync_stage3_table(raw_close_data, baseline_key, reset_clicks, monthly_return
             row["Assigned Cluster"] = cluster_map.get(t, 1)
             for col in STAGE3_FUNDAMENTAL_COLS:
                 row.setdefault(col, 0.0)
+            row.setdefault("Last Updated", "brak zapisu")
             rows.append(row)
         return rows, cluster_map, {}
 
@@ -155,6 +178,7 @@ def sync_stage3_table(raw_close_data, baseline_key, reset_clicks, monthly_return
             row["Assigned Cluster"] = cluster_map.get(t, 1)
         for col in STAGE3_FUNDAMENTAL_COLS:
             row.setdefault(col, 0.0)
+        row.setdefault("Last Updated", "brak zapisu")
         rows.append(row)
     return rows, cluster_map, manual_flags
 

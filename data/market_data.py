@@ -247,3 +247,110 @@ def fetch_treasury_yield_on_date(target_date, ticker: str = "^TNX", lookback_day
         return float(close.iloc[-1]) / 100.0
     except Exception:
         return None
+
+
+def fetch_ticker_currencies(tickers: List[str]) -> Dict[str, str]:
+    """
+    Per-ticker native quote currency (e.g. "USD", "PLN", "AUD", "GBp" for
+    LSE pence-quoted names) via yfinance's `.info` -- added 2026-09-30 for
+    the Rebalance module's position-size calculator (KALKULATOR POZYCJI),
+    which needs to know each ticker's native currency before it can convert
+    a solver weight into an exact share count priced in the user's chosen
+    base currency.
+
+    Same single-ticker-call caveat as `fetch_company_profile` above (no
+    batched `.info` equivalent in yfinance) -- called once per distinct
+    ticker, so callers doing this for a full universe should expect it to
+    be the slow part of the calculation and should wrap it in a
+    `background=True` callback with progress reporting, per this project's
+    convention for any >1s operation.
+
+    Returns {ticker: currency_code}. A ticker yfinance can't resolve a
+    currency for (bad ticker, no network, rate limit, malformed response,
+    or `.info` simply missing the field) is OMITTED from the result dict --
+    same "missing means failure, caller must handle it" contract as
+    `fetch_current_prices` -- NEVER raises.
+    """
+    import yfinance as yf
+
+    result: Dict[str, str] = {}
+    for t in list(dict.fromkeys(tickers)):  # dedupe, preserve order
+        if not t or not t.strip():
+            continue
+        try:
+            info = yf.Ticker(t.strip()).info
+        except Exception:
+            continue
+        if not isinstance(info, dict):
+            continue
+        ccy = info.get("currency")
+        if ccy:
+            result[t] = ccy
+    return result
+
+
+def fetch_fx_rate(from_ccy: str, to_ccy: str) -> Optional[float]:
+    """
+    Spot FX rate: 1 unit of `from_ccy` expressed in `to_ccy` (i.e. multiply
+    a `from_ccy`-denominated amount by this to get `to_ccy`) -- added
+    2026-09-30 for the Rebalance module's position-size calculator, which
+    needs to convert the user's portfolio value (in one base currency) into
+    each ticker's native quote currency (from `fetch_ticker_currencies`
+    above) before dividing by that ticker's live price.
+
+    Trivial 1.0 short-circuit when `from_ccy == to_ccy` (no network call --
+    this is the common case for an all-USD or all-domestic-currency
+    portfolio and shouldn't cost a request). Otherwise follows Yahoo's FX
+    ticker convention `f"{from_ccy}{to_ccy}=X"` (e.g. "USDPLN=X" quotes PLN
+    per 1 USD) via a `fetch_treasury_yield_on_date`-style date-windowed
+    `yf.download` (most recent close in a short trailing window, so a
+    weekend/holiday call still resolves) -- NOT `fetch_current_prices`,
+    because that function's period="5d" contract returns a bare float with
+    no distinction between "found nothing" and "found a 0", and this
+    function needs to try a second, inverse ticker on failure. If the
+    direct pair isn't available (Yahoo doesn't list every currency pair
+    directly), falls back to the inverse pair `f"{to_ccy}{from_ccy}=X"` and
+    inverts the result.
+
+    Returns None on total failure (neither direction resolves, bad currency
+    code, no network) -- same "None means failure" contract as
+    `fetch_treasury_yield_on_date`; NEVER raises, so a caller can safely
+    degrade a single row of the calculator to "--" rather than crash the
+    whole computation.
+    """
+    import yfinance as yf
+
+    if not from_ccy or not to_ccy:
+        return None
+    from_ccy = from_ccy.strip().upper()
+    to_ccy = to_ccy.strip().upper()
+    if from_ccy == to_ccy:
+        return 1.0
+
+    def _last_close(fx_ticker: str) -> Optional[float]:
+        try:
+            df = yf.download(fx_ticker, period="5d", threads=False, auto_adjust=True, progress=False)
+        except Exception:
+            return None
+        if df is None or df.empty:
+            return None
+        try:
+            close = df["Close"]
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            close = close.dropna()
+            if close.empty:
+                return None
+            return float(close.iloc[-1])
+        except Exception:
+            return None
+
+    direct = _last_close(f"{from_ccy}{to_ccy}=X")
+    if direct is not None:
+        return direct
+
+    inverse = _last_close(f"{to_ccy}{from_ccy}=X")
+    if inverse is not None and inverse != 0:
+        return 1.0 / inverse
+
+    return None
