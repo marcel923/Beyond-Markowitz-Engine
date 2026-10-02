@@ -1,0 +1,15 @@
+{
+  "entries": [
+    {
+      "Date": "2026-10-01",
+      "P0": 107.54,
+      "Target_Consensus": 187.37,
+      "Target_High": 220.02,
+      "Target_Low": 140.28,
+      "N_analysts": 39,
+      "EPS_CAGR": 43.38,
+      "EPS_Rev_90d": 3.86
+    }
+  ],
+  "horizon_profiles": {}
+}

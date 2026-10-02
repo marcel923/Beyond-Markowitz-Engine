@@ -250,5 +250,208 @@
     "Sector": "Technology",
     "Status": "Watchlist",
     "Last_Updated": "2026-09-11"
+  },
+  {
+    "Ticker": "APP",
+    "Name": "AppLovin Corporation",
+    "Sector": "Communication Services",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "SNOW",
+    "Name": "Snowflake Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "SHOP",
+    "Name": "Shopify Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "BABA",
+    "Name": "Alibaba Group Holding Limited",
+    "Sector": "Consumer Cyclical",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "SCHW",
+    "Name": "The Charles Schwab Corporation",
+    "Sector": "Financial Services",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "VRT",
+    "Name": "Vertiv Holdings Co",
+    "Sector": "Industrials",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "KKR",
+    "Name": "KKR & Co. Inc.",
+    "Sector": "Financial Services",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "AXON",
+    "Name": "Axon Enterprise, Inc.",
+    "Sector": "Industrials",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "LPLA",
+    "Name": "LPL Financial Holdings Inc.",
+    "Sector": "Financial Services",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "SNPS",
+    "Name": "Synopsys, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "HEI",
+    "Name": "HEICO Corporation",
+    "Sector": "Industrials",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "SOFI",
+    "Name": "SoFi Technologies, Inc.",
+    "Sector": "Financial Services",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "DASH",
+    "Name": "DoorDash, Inc.",
+    "Sector": "Consumer Cyclical",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "IOT",
+    "Name": "Samsara Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "AJG",
+    "Name": "Arthur J. Gallagher & Co.",
+    "Sector": "Financial Services",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "MELI",
+    "Name": "MercadoLibre, Inc.",
+    "Sector": "Consumer Cyclical",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "LITE",
+    "Name": "Lumentum Holdings Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "300757.SZ",
+    "Name": "RoboTechnik Intelligent Technology Co., Ltd.",
+    "Sector": "Industrials",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "300308.SZ",
+    "Name": "Zhongji Innolight Co., Ltd.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "688256.SS",
+    "Name": "Cambricon Technologies Corporation Limited",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "688041.SS",
+    "Name": "Hygon Information Technology Co., Ltd.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "002371.SZ",
+    "Name": "NAURA Technology Group Co., Ltd.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "300502.SZ",
+    "Name": "Eoptolink Technology Inc., Ltd.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "TOST",
+    "Name": "Toast, Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "688008.SS",
+    "Name": "Montage Technology Co., Ltd.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "688012.SS",
+    "Name": "Advanced Micro-Fabrication Equipment Inc. China",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "0981.HK",
+    "Name": "Semiconductor Manufacturing International Corporation",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "TPG",
+    "Name": "TPG Inc.",
+    "Sector": "Financial Services",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
+  },
+  {
+    "Ticker": "U",
+    "Name": "Unity Software Inc.",
+    "Sector": "Technology",
+    "Status": "Watchlist",
+    "Last_Updated": "2026-10-01"
   }
 ]

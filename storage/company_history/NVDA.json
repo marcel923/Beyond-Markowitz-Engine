@@ -519,6 +519,16 @@
       "N_analysts": 57,
       "EPS_CAGR": 66.14,
       "EPS_Rev_90d": 3.62
+    },
+    {
+      "Date": "2026-10-01",
+      "P0": 228.38,
+      "Target_Consensus": 333.47,
+      "Target_High": 710.29,
+      "Target_Low": 180.0,
+      "N_analysts": 61,
+      "EPS_CAGR": 66.57,
+      "EPS_Rev_90d": 32.76
     }
   ],
   "horizon_profiles": {}
